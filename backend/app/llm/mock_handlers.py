@@ -290,3 +290,19 @@ def _detective(prompt: str, ctx: dict) -> dict:
                                        "Neuskutečněné nákupy a nižší tržby", "Více stížností na nedostupnost zboží"],
                       "ruled_out": ["Pokles poptávky – návštěvnost je stabilní", "Sezónnost – kontrolní produkty drží úroveň"],
                       "confidence": 0.85}}
+
+
+@register_mock("plan_archetype")
+def _plan_archetype(prompt: str, ctx: dict) -> dict:
+    full = _plan(prompt, ctx)
+    inp = ctx["input"]
+    return {
+        "use_archetype": True,
+        "name": "Síť prodejen – zpožďující se dodavatel",
+        "logline": full["spec"]["story"]["logline"],
+        "knob_defaults": [{"name": "story_intensity", "value": str(inp.get("story_intensity", 1.0))}],
+        "row_counts": [{"name": k, "value": str(v)} for k, v in (inp.get("entity_counts") or {}).items()],
+        "questions": full["questions"],
+        "suggestions": full["suggestions"],
+        "notes": "Mock planner (archetype mode): šablona modulu retail_supplier_delay upravena podle zadání.",
+    }

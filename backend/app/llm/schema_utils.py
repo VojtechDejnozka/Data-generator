@@ -14,7 +14,8 @@ from pydantic import BaseModel
 _DROP = {"default", "title", "examples", "$schema", "discriminator"}
 
 
-def _inline(node: Any, defs: dict[str, Any], depth: int = 0) -> Any:
+def _inline(node: Any, defs: dict[str, Any], depth: int = 0, names: bool = False) -> Any:
+    """`names=True` means `node` maps property names -> schemas (never drop those keys)."""
     if depth > 40:
         raise ValueError("schema too deep / recursive")
     if isinstance(node, dict):
@@ -26,9 +27,9 @@ def _inline(node: Any, defs: dict[str, Any], depth: int = 0) -> Any:
             return _inline(merged, defs, depth + 1)
         out: dict[str, Any] = {}
         for k, v in node.items():
-            if k in _DROP or k == "$defs":
+            if not names and (k in _DROP or k == "$defs"):
                 continue
-            out[k] = _inline(v, defs, depth + 1)
+            out[k] = _inline(v, defs, depth + 1, names=(k == "properties" and not names))
         # Optional[X] -> X
         if "anyOf" in out:
             non_null = [b for b in out["anyOf"] if b.get("type") != "null"]

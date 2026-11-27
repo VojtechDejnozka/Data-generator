@@ -5,8 +5,13 @@ import json
 import logging
 from typing import Any
 
-from .contracts.io import (GenerationPlan, PlannerResponse, ReplanRequest, ScenarioInput, Suggestion, WorkPackage)
-from .contracts.spec import ScenarioSpec
+from typing import Optional
+
+from pydantic import BaseModel, Field
+
+from .contracts.io import (GenerationPlan, PlannerResponse, Question, ReplanRequest, ScenarioInput, Suggestion,
+                           WorkPackage)
+from .contracts.spec import Distractor, EvidenceQuery, ScenarioSpec, Table
 from .generation.scenarios.registry import MODULES, catalog, get_module
 from .llm.client import get_llm
 
@@ -69,8 +74,119 @@ def _post_process(resp: PlannerResponse, inp: ScenarioInput | None) -> PlannerRe
     return resp.model_copy(update={"spec": spec, "notes": "\n".join(n for n in notes if n)})
 
 
+class NameValue(BaseModel):
+    name: str
+    value: str
+
+
+class StepText(BaseModel):
+    id: str
+    mechanism: str
+    expected_impact: str = ""
+
+
+class ArchetypePlan(BaseModel):
+    """Compact planner output when a scenario module fits: adaptations of the module template."""
+
+    use_archetype: bool = Field(description="false if the story does NOT fit the module (full design needed)")
+    name: str = ""
+    logline: str = ""
+    knob_defaults: list[NameValue] = Field(default_factory=list, description="knob name -> default value")
+    row_counts: list[NameValue] = Field(default_factory=list, description="dimension table -> row count")
+    causal_step_texts: list[StepText] = Field(default_factory=list)
+    ground_truth_facts: list[str] = Field(default_factory=list)
+    extra_tables: list[Table] = Field(default_factory=list, description="optional llm_rows tables referencing module tables")
+    extra_distractors: list[Distractor] = Field(default_factory=list)
+    extra_evidence: list[EvidenceQuery] = Field(default_factory=list)
+    questions: list[Question] = Field(default_factory=list)
+    suggestions: list[Suggestion] = Field(default_factory=list)
+    notes: str = ""
+
+
+ARCHETYPE_SYSTEM = SYSTEM + """
+You are in ARCHETYPE mode: a tested scenario module template is given. Do not repeat it. Return only adaptations:
+texts (Czech), knob defaults derived from the input (dates inside the period!), row counts of dimension tables,
+optional extra llm_rows tables / distractors / evidence, questions and suggestions. Set use_archetype=false only if
+the story clearly does not match the module."""
+
+
+def merge_archetype(template: ScenarioSpec, a: ArchetypePlan) -> tuple[ScenarioSpec, list[str]]:
+    spec = template.model_copy(deep=True)
+    notes: list[str] = []
+    if a.name:
+        spec.meta.name = a.name[:200]
+    if a.logline:
+        spec.story.logline = a.logline
+    for kv in a.knob_defaults:
+        k = spec.knob(kv.name)
+        if not k:
+            notes.append(f"neznámý knob {kv.name} ignorován")
+            continue
+        try:
+            k.parse(kv.value)
+            k.default = kv.value
+        except (ValueError, TypeError):
+            notes.append(f"knob {kv.name}: neplatná hodnota {kv.value}")
+    for rc in a.row_counts:
+        t = spec.table(rc.name)
+        try:
+            n = int(float(rc.value))
+        except ValueError:
+            continue
+        if t and t.strategy != "simulation" and 1 <= n <= 100000:
+            t.row_count = n
+    by_id = {s.id: s for s in spec.story.causal_chain}
+    for st in a.causal_step_texts:
+        if st.id in by_id:
+            by_id[st.id].mechanism = st.mechanism or by_id[st.id].mechanism
+            by_id[st.id].expected_impact = st.expected_impact or by_id[st.id].expected_impact
+    if a.ground_truth_facts:
+        spec.story.ground_truth_facts = a.ground_truth_facts
+    names = {t.name for t in spec.tables}
+    for t in a.extra_tables:
+        if t.name not in names:
+            spec.tables.append(t.model_copy(update={"strategy": "llm_rows" if t.strategy == "simulation" else t.strategy}))
+            names.add(t.name)
+    spec.story.distractors += [d for d in a.extra_distractors if d.id not in {x.id for x in spec.story.distractors}]
+    spec.evidence += [e for e in a.extra_evidence if e.id not in {x.id for x in spec.evidence}]
+    # the step start follows the (possibly adapted) delay start knob
+    ds = spec.knob("delay_start_date")
+    if ds and spec.story.causal_chain:
+        spec.story.causal_chain[0].start = ds.default
+    return spec, notes
+
+
 async def plan_scenario(inp: ScenarioInput) -> PlannerResponse:
     template = _template_for(inp)
+    if template:
+        module = get_module(template["meta"]["archetype"])
+        tmpl_spec = ScenarioSpec.model_validate(template)
+        compact = {
+            "meta": template["meta"], "tables": [(t["name"], t["strategy"], t["row_count"]) for t in template["tables"]],
+            "story": template["story"], "knobs": template["knobs"],
+            "evidence": [(e["id"], e["title"]) for e in template["evidence"]],
+        }
+        prompt = ("## Scenario input\n" + json.dumps(inp.model_dump(), ensure_ascii=False, indent=1)
+                  + f"\n\n## Module {module.id}: {module.description}\n## Template (compact)\n"
+                  + json.dumps(compact, ensure_ascii=False)
+                  + "\n\nReturn the ArchetypePlan (adaptations only, 2-4 suggestions with structured patches, "
+                    "up to 3 questions).")
+        try:
+            a = await get_llm().structured(role="strong", task="plan_archetype", prompt=prompt, schema=ArchetypePlan,
+                                           system=ARCHETYPE_SYSTEM, mock_context={"input": inp.model_dump()})
+        except Exception as e:  # noqa: BLE001
+            log.warning("archetype planning failed: %s", e)
+            raise
+        if a.use_archetype:
+            spec, notes = merge_archetype(tmpl_spec, a)
+            resp = PlannerResponse(spec=spec, questions=a.questions, suggestions=a.suggestions,
+                                   notes="\n".join(filter(None, [a.notes, *notes])))
+            return _post_process(resp, inp)
+        template = None  # fall through to full design
+    return await _plan_full(inp, template)
+
+
+async def _plan_full(inp: ScenarioInput, template: Optional[dict]) -> PlannerResponse:
     prompt = (
         "## Scenario input\n" + json.dumps(inp.model_dump(), ensure_ascii=False, indent=1)
         + "\n\n## Scenario module catalog (deterministic simulators)\n" + json.dumps(catalog(), ensure_ascii=False)

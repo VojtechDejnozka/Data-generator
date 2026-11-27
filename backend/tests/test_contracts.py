@@ -57,3 +57,10 @@ def test_gemini_schema_inlines_refs():
     # Optional fields collapse to the non-null branch
     col = s["properties"]["spec"]["properties"]["tables"]["items"]["properties"]["columns"]["items"]
     assert col["properties"]["fk"]["type"] == "string"
+
+
+def test_gemini_schema_keeps_property_named_title():
+    s = gemini_schema(PlannerResponse)
+    widget = s["properties"]["spec"]["properties"]["dashboard"]["properties"]["widgets"]["items"]
+    assert "title" in widget["properties"] and "title" in widget["required"]
+    assert "title" not in widget  # the schema keyword itself is dropped

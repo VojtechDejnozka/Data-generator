@@ -101,6 +101,7 @@ class ScenarioModule(ABC):
         for t in spec.tables:
             if t.name in canon:
                 c = canon[t.name].model_copy(deep=True)
+                c.flags = sorted(set(c.flags) | {"module"})
                 extra = {col.name for col in t.columns} - {col.name for col in c.columns}
                 if extra:
                     warnings.append(f"{t.name}: columns {sorted(extra)} are not produced by the simulator and were dropped")
@@ -118,7 +119,7 @@ class ScenarioModule(ABC):
         for name, t in canon.items():
             if name not in seen:
                 warnings.append(f"{name}: required by the simulator, added back")
-                out_tables.append(t.model_copy(deep=True))
+                out_tables.append(t.model_copy(update={"flags": sorted(set(t.flags) | {"module"})}, deep=True))
         knob_names = {k.name for k in spec.knobs}
         knobs = list(spec.knobs) + [k for k in self.knobs() if k.name not in knob_names]
         spec = spec.model_copy(update={"tables": out_tables, "knobs": knobs})

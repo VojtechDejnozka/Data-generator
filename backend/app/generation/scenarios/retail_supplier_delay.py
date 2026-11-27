@@ -526,7 +526,7 @@ class RetailSupplierDelay(ScenarioModule):
             lead = int(lead_rng.integers(1, 3)) if fresh else int(lead_rng.integers(3, 6))
             weekdays = [0, 3] if fresh else [int(lead_rng.integers(0, 5))]
             suppliers.append({"supplier_id": i, "name": r.name.strip()[:120], "city": r.city.strip()[:60],
-                              "contact_email": r.contact_email.strip()[:120],
+                              "contact_email": _ascii_email(r.contact_email)[:120],
                               "category_focus": ", ".join(CATEGORIES[c] for c in cats),
                               "contract_lead_time_days": lead,
                               "order_weekdays": ",".join(map(str, weekdays))})
@@ -1269,6 +1269,13 @@ def _template_ok(text: str, category: str) -> bool:
     if category == "Nedostupnost zboží" and "product" not in used:
         return False
     return 10 <= len(text) <= 400
+
+
+def _ascii_email(e: str) -> str:
+    import unicodedata
+
+    e = unicodedata.normalize("NFKD", e.strip().lower())
+    return "".join(c for c in e if c.isascii() and (c.isalnum() or c in "@._-+"))
 
 
 def _ascii(s: str) -> str:
