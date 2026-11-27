@@ -180,6 +180,7 @@ export const api = {
   startDetective: (id: string) => req<{ job_id: string }>('POST', `/api/runs/${id}/detective`),
   detective: (id: string) => req<Json>('GET', `/api/runs/${id}/detective`),
   // documents pipeline
+  docSources: (id: string) => req<Json[]>('GET', `/api/runs/${id}/doc-sources`),
   docsPlan: (input: Json) => req<{ job_id: string }>('POST', '/api/docs/plan', input),
   docsSession: (sid: string) => req<Json>('GET', `/api/docs/plan/${sid}`),
   docsReplan: (sid: string, body: Json) => req<{ job_id: string }>('POST', `/api/docs/plan/${sid}/replan`, body),

@@ -21,6 +21,8 @@ class DocInput(BaseModel):
     seed: int = 42
     source_run_id: Optional[str] = Field(None, description="Ground facts in rows of an existing data run")
     source_table: Optional[str] = None
+    source_filter_col: Optional[str] = None
+    source_filter_val: Optional[str] = None
     data_language: str = "cs"
 
 
@@ -44,7 +46,8 @@ class FactField(BaseModel):
 
 class DocSection(BaseModel):
     title: str
-    kind: Literal["text", "list", "key_values", "table"] = "text"
+    kind: Literal["text", "list", "key_values", "table", "data_table"] = Field(
+        "text", description="data_table = filled deterministically from the 'items' fact (line items), not by the writer")
     instructions: str = ""
 
 
@@ -80,6 +83,8 @@ class DocSpec(BaseModel):
     story: Optional[DocStory] = None
     source_run_id: Optional[str] = None
     source_table: Optional[str] = None
+    source_filter_col: Optional[str] = None
+    source_filter_val: Optional[str] = None
 
     @model_validator(mode="after")
     def _check(self) -> "DocSpec":

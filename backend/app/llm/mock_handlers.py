@@ -372,12 +372,22 @@ def _doc_plan(prompt: str, ctx: dict) -> dict:
     text = inp["description"].lower()
     if ctx.get("source"):
         src = ctx["source"]
-        spec = {"name": f"Dokumenty z tabulky {src['table']}", "document_type": "formální dopis",
-                "description": f"Formální dopisy vytvořené z řádků tabulky {src['table']}",
-                "style": "Zdvořilý formální styl", "min_words": 60, "max_words": 300,
-                "title_template": "Dopis {id}", "facts": src["columns"],
-                "sections": [{"title": "Oslovení a předmět", "kind": "text"}, {"title": "Shrnutí případu", "kind": "key_values"},
-                             {"title": "Další postup", "kind": "list"}], "story": None}
+        invoice = "faktur" in text or "invoice" in text
+        data_sec = [{"title": "Položky", "kind": "data_table", "instructions": "Položky ze zdrojových dat"}] \
+            if src.get("has_items") else []
+        if invoice:
+            secs = [{"title": "Dodavatel a odběratel", "kind": "key_values", "instructions": "Identifikace stran"},
+                    {"title": "Údaje dokladu", "kind": "key_values", "instructions": "Číslo, data vystavení a splatnosti"},
+                    *data_sec,
+                    {"title": "Platební podmínky", "kind": "text", "instructions": "Splatnost 14 dní, převodem"}]
+        else:
+            secs = [{"title": "Oslovení a předmět", "kind": "text"}, {"title": "Shrnutí případu", "kind": "key_values"},
+                    *data_sec, {"title": "Další postup", "kind": "list"}]
+        spec = {"name": ("Faktury" if invoice else "Dokumenty") + f" z tabulky {src['table']}",
+                "document_type": "faktura – daňový doklad" if invoice else "formální dopis",
+                "description": inp["description"][:300], "style": "Formální obchodní dokument",
+                "min_words": 40, "max_words": 400, "title_template": ("Faktura č. FV-{" + src["fields"][0]["name"] + "}") if invoice else "Dopis {id}",
+                "facts": src["fields"], "sections": secs, "story": None}
     elif any(w in text for w in ("pacient", "lékař", "zdrav", "nemoc", "patient", "health")):
         spec = copy.deepcopy(_MED_SPEC)
     else:
@@ -405,24 +415,31 @@ def _doc_write(prompt: str, ctx: dict) -> dict:
             return str(int(v)) if v.is_integer() else f"{v:.2f}".rstrip("0").rstrip(".")
         return str(v)
 
-    pairs = [[f["description"] or f["name"], fv(facts.get(f["name"]))] for f in spec["facts"] if f["name"] in facts]
-    mention = ", ".join(f"{f['description'] or f['name']}: {fv(facts.get(f['name']))}" for f in spec["facts"]
-                        if f["name"] in facts)
-    filler = ("Dokument byl vyhotoven na základě dostupných podkladů a odpovídá skutečnostem uvedeným níže. "
-              "Všechny údaje byly zkontrolovány odpovědnou osobou. ")
+    shown = [f for f in spec["facts"] if f["name"] in facts and f["name"] not in ("items", "items_preview")
+             and not (f["name"].endswith("_id") and not f.get("must_mention"))]
+    kv_secs = [s for s in spec["sections"] if s["kind"] == "key_values"]
+    chunk = max(1, -(-len(shown) // max(len(kv_secs), 1)))
+    must = [f for f in shown if f.get("must_mention")]
+    sentence = "; ".join(f"{f['description'] or f['name']}: {fv(facts[f['name']])}" for f in must)
     sections = []
     for s in spec["sections"]:
         sec = {"title": s["title"], "body": "", "items": [], "pairs": [], "rows": []}
-        if s["kind"] == "key_values":
-            sec["pairs"] = pairs
+        if s["kind"] == "data_table":
+            pass  # filled deterministically from the line items
+        elif s["kind"] == "key_values":
+            k = kv_secs.index(s)
+            sec["pairs"] = [[f["description"] or f["name"], fv(facts[f["name"]])] for f in shown[k * chunk:(k + 1) * chunk]]
         elif s["kind"] == "table":
-            sec["rows"] = [["Parametr", "Hodnota"]] + [[p[0], p[1]] for p in pairs if p[1] and p[1][0].isdigit()]
+            nums = [f for f in shown if f["type"] in ("int", "float")]
+            sec["rows"] = [["Parametr", "Hodnota"]] + [[f["description"] or f["name"], fv(facts[f["name"]])] for f in nums]
         elif s["kind"] == "list":
-            sec["items"] = [f"{p[0]}: {p[1]}" for p in pairs[:4]] + (
+            sec["items"] = [f"{f['description'] or f['name']}: {fv(facts[f['name']])}" for f in must[:4]] + (
                 ["Doporučena kontrola zvýšených hodnot."] if affected else ["Bez dalších doporučení."])
         else:
-            sec["body"] = filler * 3 + f"Shrnutí údajů – {mention}." + (
-                " Byly zjištěny neobvyklé hodnoty vyžadující pozornost." if affected else "")
+            sec["body"] = (f"{s.get('instructions') or s['title']}. Dokument byl vyhotoven na základě evidovaných údajů "
+                           f"({sentence}). Údaje byly zkontrolovány odpovědnou osobou a odpovídají stavu v systému. "
+                           "V případě nesrovnalostí nás prosím kontaktujte do 14 dnů od doručení tohoto dokumentu."
+                           + (" Byly zjištěny neobvyklé hodnoty vyžadující pozornost." if affected else ""))
         sections.append(sec)
     title = spec["title_template"]
     try:

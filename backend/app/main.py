@@ -449,3 +449,24 @@ def docs_export(run_id: str) -> Response:
                                  "údaje. Ground truth (skrytý vzor) není součástí exportu.\n")
     return Response(buf.getvalue(), media_type="application/zip",
                     headers={"Content-Disposition": f'attachment; filename="story2data-docs-{run_id}.zip"'})
+
+
+@app.get("/api/runs/{run_id}/doc-sources")
+def doc_sources(run_id: str) -> list[dict]:
+    """Tables of a data run that can be turned into files (1 row = 1 document) + suggested document type."""
+    from .documents.sources import inspect_source, suggest_document
+
+    run = _run_or_404(run_id)
+    if run.get("kind") == "documents":
+        raise HTTPException(400, "document runs cannot be a source")
+    spec = _spec_of(run)
+    out = []
+    for t in spec.tables:
+        info = inspect_source(run_id, t.name)
+        out.append({"table": t.name, "description": t.description, "rows": run.get("row_counts", {}).get(t.name),
+                    "suggestion": suggest_document(t.name),
+                    "joins": [f"{fk.name} → {rt.name}" for fk, rt, _ in info.parents],
+                    "items_from": info.child[0].name if info.child else None,
+                    "columns": [c.name for c in t.columns]})
+    out.sort(key=lambda x: (x["items_from"] is None, x["table"]))
+    return out

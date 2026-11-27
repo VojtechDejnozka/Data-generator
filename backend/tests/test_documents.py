@@ -118,3 +118,75 @@ def test_docs_api():
         assert c.post(f"/api/runs/{rid}/query", json={"sql": "SELECT COUNT(*) FROM facts"}).json()["rows"] == [[4]]
         assert c.get(f"/api/docs/runs/{rid}/export.zip").content[:2] == b"PK"
         assert any(x["kind"] == "documents" for x in c.get("/api/runs").json())
+
+
+def _source_run(retail_dataset):
+    from app.generation.scenarios.base import GenContext
+    from app.generation.scenarios.registry import RETAIL
+
+    spec, dims = retail_dataset
+    res = RETAIL.simulate(spec, dims, GenContext(seed=7, knobs=spec.knob_values()))
+    src = store.new_run_id()
+    store.run_path(src).mkdir(parents=True)
+    store.write_sqlite(store.db_path(src), spec, res.tables)
+    store.save_json(src, "run.json", {"run_id": src, "status": "done", "spec": spec.model_dump(mode="json"),
+                                      "row_counts": {k: len(v) for k, v in res.tables.items()}})
+    return src, res
+
+
+def test_invoices_from_purchase_orders(retail_dataset):
+    import json as _json
+    import sqlite3
+
+    from app.documents.sources import build_source_facts
+
+    src, res = _source_run(retail_dataset)
+    fields, facts = build_source_facts(src, "purchase_orders", 5, 1, "supplier_id", "2")
+    names = [f.name for f in fields]
+    assert {"supplier_name", "store_name", "items", "total_amount", "vat_amount", "total_with_vat"} <= set(names)
+    assert (facts.supplier_id == 2).all()
+    conn = sqlite3.connect(store.db_path(src))
+    for _, r in facts.iterrows():
+        expected = conn.execute(
+            "SELECT ROUND(SUM(l.qty_received * p.unit_cost), 2) FROM purchase_order_lines l "
+            "JOIN products p ON p.product_id = l.product_id WHERE l.po_id = ?", (int(r.po_id),)).fetchone()[0]
+        assert abs(r.total_amount - expected) < 0.05  # amounts computed from the data, not by an LLM
+        assert abs(r.total_with_vat - round(r.total_amount * 1.21, 2)) < 0.02
+        items = _json.loads(r["items"])
+        assert len(items) == r.items_count and "product_id" not in items[0] and "product_name" in items[0]
+        assert not any(k.endswith("unit_price") for k in items[0])  # purchase invoice shows cost prices only
+    conn.close()
+
+    pr = run(plan_docs(DocInput(description="Faktury od dodavatelů k objednávkám", count=3, format="pdf",
+                                source_run_id=src, source_table="purchase_orders",
+                                source_filter_col="supplier_id", source_filter_val="2")))
+    assert any(s.kind == "data_table" for s in pr.spec.sections) and pr.spec.story is None
+    rid = run(execute_doc_run(DocRunRequest(spec=pr.spec), Job(id="i", kind="docs")))["run_id"]
+    meta = store.load_run(rid)
+    assert meta["checks_summary"]["passed"] == 3, meta["documents"]
+    written = store.load_json(rid, "written.json")
+    sec = next(s for s in written["1"]["sections"] if s["rows"])
+    assert sec["rows"][0][0] in ("Objednáno", "Dodáno", "Kód", "Položka") and len(sec["rows"]) > 2
+    assert sec["pairs"][-1][0] == "Celkem k úhradě" and sec["pairs"][-1][1].endswith("Kč")
+
+
+def test_receipts_hide_internal_cost(retail_dataset):
+    import json as _json
+
+    from app.documents.sources import build_source_facts
+
+    src, _ = _source_run(retail_dataset)
+    fields, facts = build_source_facts(src, "transactions", 3, 1)
+    items = _json.loads(facts["items"].iloc[0])
+    assert not any("cost" in k for k in items[0]) and "line_total" in items[0]
+
+
+def test_doc_sources_endpoint(retail_dataset):
+    from app.main import app
+
+    src, _ = _source_run(retail_dataset)
+    with TestClient(app) as c:
+        s = {x["table"]: x for x in c.get(f"/api/runs/{src}/doc-sources").json()}
+    assert s["purchase_orders"]["items_from"] == "purchase_order_lines"
+    assert "Faktura" in s["purchase_orders"]["suggestion"]
+    assert s["transactions"]["items_from"] == "transaction_items"

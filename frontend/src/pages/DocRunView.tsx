@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { Link, useParams } from 'react-router-dom'
 import { api, fmt, type Json } from '../api'
 import { ResultTable } from '../components/Chart'
 import { SqlTab } from '../components/Tabs'
@@ -35,7 +35,7 @@ export default function DocRunView() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex-1 min-w-0">
-          <div className="text-xs text-slate-500 mono">{run.run_id}{spec.source_run_id && ` · fakta z ${spec.source_table} (${spec.source_run_id})`}</div>
+          <div className="text-xs text-slate-500 mono">{run.run_id}{spec.source_run_id && <> · fakta z tabulky {spec.source_table}{spec.source_filter_col && ` (${spec.source_filter_col} = ${spec.source_filter_val})`} běhu <Link className="text-blue-700" to={`/runs/${spec.source_run_id}?tab=files`}>{spec.source_run_id}</Link></>}</div>
           <h1 className="text-xl font-bold truncate">{spec.name} <span className="text-slate-500 font-normal text-base">– {docs.length} × {spec.document_type} ({spec.format.toUpperCase()})</span></h1>
         </div>
         <VerdictChip v={v.verdict} />

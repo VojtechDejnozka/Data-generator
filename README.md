@@ -121,6 +121,18 @@ Formáty **PDF, HTML, Markdown, TXT, JSON, e-mail (.eml)**.
 6. **Vykreslení + validace (STRONG)** na vzorku dokumentů a statistikách zasažených vs. ostatních.
 7. **Výstup:** náhled a stažení dokumentů, fakta jako SQLite/SQL, ZIP export, ground truth na vyžádání.
 
+### Soubory z dat běhu (záložka *Soubory z dat* v běhu)
+Z libovolné tabulky vygenerovaného datasetu lze vytvořit soubory – 1 řádek = 1 soubor: z objednávek
+**faktury**, z dodávek **dodací listy**, z transakcí **účtenky**, ze stížností **odpovědi zákazníkům**…
+(tlačítko „📄 Soubory z tabulky“ je i v data browseru). Řádek se automaticky obohatí:
+- o údaje z navázaných tabulek přes FK (dodavatel, prodejna, zákazník…),
+- o **položky** z podřízené tabulky (`purchase_order_lines`, `transaction_items`) včetně názvů produktů,
+- o **částky spočítané deterministicky z dat** (řádkové částky, základ, DPH 21 %, celkem). U nákupních dokladů
+  se ukazují nákupní ceny, u prodejních nikdy interní náklady.
+Tabulka položek a součty se do dokumentu vykreslí přímo z databáze (sekce typu `data_table`), LLM píše jen
+okolní text. Volitelný filtr (např. jen `supplier_id = 2`) a seedovaný výběr řádků. Příběh dat se do souborů
+přenese sám (faktury problémového dodavatele mají např. pozdější dodání).
+
 Každý dokument nese viditelné označení **„SYNTETICKÝ DOKUMENT“** (u PDF v patičce), aby nemohl být zaměněn
 za skutečný záznam. PDF používá písmo DejaVu Sans (licence v `backend/app/documents/fonts/LICENSE_DEJAVU`).
 

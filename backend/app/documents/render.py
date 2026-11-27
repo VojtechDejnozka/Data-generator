@@ -43,12 +43,12 @@ def _markdown(doc: WrittenDocument) -> str:
             out += [s.body, ""]
         if s.items:
             out += [f"- {i}" for i in s.items] + [""]
-        if s.pairs:
-            out += [f"- **{p[0]}:** {p[1]}" for p in s.pairs if len(p) >= 2] + [""]
         if s.rows:
             head, *body = s.rows
             out += ["| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
             out += ["| " + " | ".join(r) + " |" for r in body] + [""]
+        if s.pairs:
+            out += [f"- **{p[0]}:** {p[1]}" for p in s.pairs if len(p) >= 2] + [""]
     out.append(f"_{SYNTHETIC_NOTE}_")
     return "\n".join(out)
 
@@ -68,13 +68,13 @@ def _html(doc: WrittenDocument) -> str:
             parts += [f"<p>{e(p)}</p>" for p in s.body.split("\n") if p.strip()]
         if s.items:
             parts.append("<ul>" + "".join(f"<li>{e(i)}</li>" for i in s.items) + "</ul>")
-        if s.pairs:
-            parts.append("<table class='kv'>" + "".join(f"<tr><td>{e(p[0])}</td><td>{e(p[1])}</td></tr>"
-                                                          for p in s.pairs if len(p) >= 2) + "</table>")
         if s.rows:
             head, *body = s.rows
             parts.append("<table><tr>" + "".join(f"<th>{e(h)}</th>" for h in head) + "</tr>"
                          + "".join("<tr>" + "".join(f"<td>{e(c)}</td>" for c in r) + "</tr>" for r in body) + "</table>")
+        if s.pairs:
+            parts.append("<table class='kv'>" + "".join(f"<tr><td>{e(p[0])}</td><td>{e(p[1])}</td></tr>"
+                                                          for p in s.pairs if len(p) >= 2) + "</table>")
     parts.append(f"<div class='note'>{e(SYNTHETIC_NOTE)}</div></body></html>")
     return "".join(parts)
 
@@ -117,6 +117,21 @@ def _pdf(doc: WrittenDocument, meta: dict[str, Any]) -> bytes:
             pdf.multi_cell(0, 5, s.body, new_x="LMARGIN", new_y="NEXT")
         for i in s.items:
             pdf.multi_cell(0, 5, f"•  {i}", new_x="LMARGIN", new_y="NEXT")
+        if s.rows:
+            width = max(len(r) for r in s.rows)
+            norm = [list(r) + [""] * (width - len(r)) for r in s.rows]
+            pdf.set_font("DejaVu", "", 10 if width <= 4 else 8)
+            # column widths follow content length (narrow numbers, wide names)
+            lens = [max(min(max(len(str(r[i])) for r in norm), 40), 6) for i in range(width)]
+            with pdf.table(line_height=5 if width > 4 else 5.5, col_widths=tuple(lens),
+                           headings_style=FontFace(emphasis="BOLD", fill_color=(235, 242, 250))) as t:
+                for r in norm:
+                    row = t.row()
+                    for c in r:
+                        row.cell(str(c))
+            pdf.set_font("DejaVu", "", 10)
+        if s.rows and s.pairs:
+            pdf.ln(2)
         rows = [p[:2] for p in s.pairs if len(p) >= 2]
         if rows:
             with pdf.table(col_widths=(35, 65), first_row_as_headings=False, line_height=5.5,
@@ -125,14 +140,6 @@ def _pdf(doc: WrittenDocument, meta: dict[str, Any]) -> bytes:
                     row = t.row()
                     row.cell(r[0], style=FontFace(emphasis="BOLD"))
                     row.cell(r[1])
-        if s.rows:
-            width = max(len(r) for r in s.rows)
-            norm = [list(r) + [""] * (width - len(r)) for r in s.rows]
-            with pdf.table(line_height=5.5, headings_style=FontFace(emphasis="BOLD", fill_color=(235, 242, 250))) as t:
-                for r in norm:
-                    row = t.row()
-                    for c in r:
-                        row.cell(str(c))
         pdf.ln(3)
     return bytes(pdf.output())
 

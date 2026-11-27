@@ -15,8 +15,8 @@ import numpy as np
 import pandas as pd
 
 from ..config import get_settings
-from ..contracts.docs import (DocInput, DocPlannerResponse, DocReplanRequest, DocRunRequest, DocSpec, FactField,
-                              WrittenDocument)
+from ..contracts.docs import (DocInput, DocPlannerResponse, DocReplanRequest, DocRunRequest, DocSection, DocSpec,
+                              FactField, WrittenDocument, WrittenSection)
 from ..contracts.io import ValidationVerdict
 from ..contracts.spec import CausalStep, Column, Meta, ScenarioSpec, Story, Table
 from ..generation.llm_rows import generate_table
@@ -24,6 +24,7 @@ from ..jobs import Job
 from ..llm.client import LLMError, UsageTracker, get_llm, usage_scope
 from ..storage import runs as store
 from .render import EXT, doc_text, render
+from .sources import ITEMS_FIELD, build_source_facts, describe_source
 
 log = logging.getLogger("documents")
 MAX_REPAIR_ITERATIONS = 2
@@ -43,19 +44,8 @@ def _source_context(inp_or_spec) -> tuple[list[FactField], dict[str, Any]] | Non
     rid, table = inp_or_spec.source_run_id, inp_or_spec.source_table
     if not rid or not table:
         return None
-    run = store.load_run(rid)
-    if not run:
-        raise ValueError(f"source run {rid} not found")
-    spec = ScenarioSpec.model_validate(run["spec"])
-    t = spec.table(table)
-    if not t:
-        raise ValueError(f"table {table} not in run {rid}")
-    fields = [FactField(name=c.name, type=c.type, description=c.description, enum_values=c.enum_values,
-                        min=c.min, max=c.max, must_mention=c.pk or c.name in ("name", "title", "text"))
-              for c in t.columns]
-    sample = store.read_table(rid, table).head(3).to_dict(orient="records")
-    return fields, {"table": table, "description": t.description, "columns": [f.model_dump() for f in fields],
-                    "sample_rows": sample}
+    desc = describe_source(rid, table)
+    return [FactField.model_validate(f) for f in desc["fields"]], desc
 
 
 def _post(resp: DocPlannerResponse, inp: Optional[DocInput]) -> DocPlannerResponse:
@@ -63,15 +53,19 @@ def _post(resp: DocPlannerResponse, inp: Optional[DocInput]) -> DocPlannerRespon
     upd: dict[str, Any] = {}
     if inp:
         upd.update(count=inp.count, format=inp.format, seed=inp.seed, source_run_id=inp.source_run_id,
-                   source_table=inp.source_table, data_language=inp.data_language)
+                   source_table=inp.source_table, source_filter_col=inp.source_filter_col,
+                   source_filter_val=inp.source_filter_val, data_language=inp.data_language)
     src = _source_context(inp or spec)
     if src:
         fields, _ = src
         flags = {f.name: f.must_mention for f in spec.facts}
         upd["facts"] = [f.model_copy(update={"must_mention": flags.get(f.name, f.must_mention)}) for f in fields]
         if spec.story:
-            names = {f.name for f in fields}
-            upd["story"] = spec.story.model_copy(update={"overrides": [o for o in spec.story.overrides if o.field in names]})
+            # facts of grounded documents are real data – a hidden pattern must not alter them
+            upd["story"] = None
+        if src[1].get("has_items") and not any(s.kind == "data_table" for s in spec.sections):
+            upd["sections"] = [*spec.sections, DocSection(title="Položky", kind="data_table",
+                                                          instructions="Položky ze zdrojových dat")]
     if upd:
         spec = DocSpec.model_validate({**spec.model_dump(), **upd})
     return resp.model_copy(update={"spec": spec})
@@ -80,7 +74,9 @@ def _post(resp: DocPlannerResponse, inp: Optional[DocInput]) -> DocPlannerRespon
 async def plan_docs(inp: DocInput) -> DocPlannerResponse:
     src = _source_context(inp)
     prompt = (f"## Request\n{inp.description}\n\nDocuments: {inp.count} × {inp.format}, language {inp.data_language}.\n"
-              + (f"\n## Facts come from an existing table (use exactly these fields as facts)\n"
+              + (f"\n## Facts come from an existing table, enriched with joined parents, line items and computed "
+                 f"amounts (use exactly these fields as facts; put line items into ONE section of kind data_table, "
+                 f"amounts like total_with_vat are pre-computed and must be mentioned, never recomputed)\n"
                  f"{json.dumps(src[1], ensure_ascii=False, default=str)}\n" if src else "")
               + "\nReturn the DocPlannerResponse.")
     resp = await get_llm().structured(role="strong", task="doc_plan", prompt=prompt, schema=DocPlannerResponse,
@@ -119,13 +115,11 @@ def _wrapper(spec: DocSpec) -> ScenarioSpec:
 async def build_facts(spec: DocSpec, job: Job) -> pd.DataFrame:
     names = [f.name for f in spec.facts if f.name != "doc_id"]
     if spec.source_run_id and spec.source_table:
-        job.emit("facts", f"Fakta z tabulky {spec.source_table} běhu {spec.source_run_id}", 0.08)
-        df = store.read_table(spec.source_run_id, spec.source_table)
-        rng = np.random.default_rng([spec.seed, 7])
-        idx = np.sort(rng.choice(len(df), size=min(spec.count, len(df)), replace=False))
-        df = df.iloc[idx][[n for n in names if n in df.columns]].reset_index(drop=True)
-        df.insert(0, "doc_id", range(1, len(df) + 1))
-        return df
+        job.emit("facts", f"Fakta z tabulky {spec.source_table} běhu {spec.source_run_id} (+ vazby, položky, částky)", 0.08)
+        _, df = build_source_facts(spec.source_run_id, spec.source_table, spec.count, spec.seed,
+                                   spec.source_filter_col, spec.source_filter_val)
+        keep = ["doc_id"] + [n for n in names if n in df.columns]
+        return df[keep]
     job.emit("facts", f"CHEAP model generuje fakta pro {spec.count} dokumentů", 0.08)
     df, stats = await generate_table(_wrapper(spec), facts_table(spec), {}, batch_size=20,
                                      progress=lambda m, f: job.emit("facts", m))
@@ -194,6 +188,9 @@ def mention_variants(v: Any, typ: str) -> list[str]:
 
 def check_document(spec: DocSpec, doc: WrittenDocument, facts: dict[str, Any]) -> dict[str, Any]:
     text = doc_text(doc)
+    # deterministic data tables do not count towards the writer's length
+    data_titles = {s.title.casefold() for s in spec.sections if s.kind == "data_table"}
+    prose = doc_text(doc.model_copy(update={"sections": [x for x in doc.sections if x.title.casefold() not in data_titles]}))
     low = text.casefold()
     issues: list[str] = []
     titles = [s.title.casefold() for s in doc.sections]
@@ -203,10 +200,10 @@ def check_document(spec: DocSpec, doc: WrittenDocument, facts: dict[str, Any]) -
         issues.append(f"chybí sekce: {', '.join(missing)}")
     types = {f.name: f.type for f in spec.facts}
     for f in spec.facts:
-        if f.must_mention and f.name in facts and facts[f.name] not in (None, ""):
+        if f.must_mention and f.name != ITEMS_FIELD and f.name in facts and facts[f.name] not in (None, ""):
             if not any(v in low for v in mention_variants(facts[f.name], types[f.name])):
                 issues.append(f"nezmiňuje {f.name} = {_fmt(facts[f.name])}")
-    words = len(re.findall(r"\w+", text))
+    words = len(re.findall(r"\w+", prose))
     if words < spec.min_words * 0.7:
         issues.append(f"příliš krátký ({words} slov < {spec.min_words})")
     if words > spec.max_words * 1.4:
@@ -216,8 +213,64 @@ def check_document(spec: DocSpec, doc: WrittenDocument, facts: dict[str, Any]) -
     return {"ok": not issues, "issues": issues, "words": words}
 
 
+def _items(facts: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = facts.get(ITEMS_FIELD)
+    if not raw:
+        return []
+    try:
+        return json.loads(raw) if isinstance(raw, str) else list(raw)
+    except (ValueError, TypeError):
+        return []
+
+
+_ITEM_LABELS = {"product_name": "Položka", "product_sku": "Kód", "quantity": "Množství", "qty_ordered": "Objednáno",
+                "qty_received": "Dodáno", "unit_price": "Cena/ks", "product_unit_price": "Cena/ks",
+                "product_unit_cost": "Nákupní cena/ks", "line_total": "Celkem", "line_amount": "Celkem"}
+
+
+def fill_data_tables(spec: DocSpec, doc: WrittenDocument, facts: dict[str, Any]) -> WrittenDocument:
+    """Replace data_table sections with the real line items + pre-computed totals (deterministic)."""
+    targets = [s for s in spec.sections if s.kind == "data_table"]
+    if not targets:
+        return doc
+    items = _items(facts)
+    cs = spec.data_language.startswith("cs")
+
+    def money(v: Any) -> str:
+        if isinstance(v, float):
+            out = f"{v:.2f}"
+            return out.replace(".", ",") if cs else out
+        return _fmt(v)
+
+    cols = [k for k in (items[0].keys() if items else []) if not k.endswith("_category")]
+    rows = [[_ITEM_LABELS.get(c, c) for c in cols]] + [[money(r.get(c)) if r.get(c) is not None else "" for c in cols]
+                                                       for r in items]
+    unit = " Kč" if cs else ""
+    pairs = [[lbl, money(float(facts[k])) + unit] for k, lbl in (("total_amount", "Základ (bez DPH)"),
+                                                                ("vat_amount", "DPH 21 %"),
+                                                                ("total_with_vat", "Celkem k úhradě"))
+             if facts.get(k) is not None]
+    out = []
+    used = set()
+    for sec in doc.sections:
+        t = next((x for x in targets if x.title.casefold() == sec.title.casefold()), None)
+        if t:
+            used.add(t.title)
+            out.append(WrittenSection(title=sec.title, body=sec.body, rows=rows, pairs=pairs))
+        else:
+            out.append(sec)
+    for t in targets:
+        if t.title not in used:
+            out.append(WrittenSection(title=t.title, rows=rows, pairs=pairs))
+    return doc.model_copy(update={"sections": out})
+
+
 async def write_document(spec: DocSpec, facts: dict[str, Any], affected: bool, notes: str = "") -> WrittenDocument:
-    must = {f.name: _fmt(facts[f.name]) for f in spec.facts if f.must_mention and f.name in facts}
+    must = {f.name: _fmt(facts[f.name]) for f in spec.facts if f.must_mention and f.name in facts and f.name != ITEMS_FIELD}
+    shown = {k: v for k, v in facts.items() if k != ITEMS_FIELD}
+    items = _items(facts)
+    if items:
+        shown["items_preview"] = items[:15]
     sections = [s.model_dump() for s in spec.sections]
     story = (f"\nThis document is part of a hidden pattern: {spec.story.writer_hint or spec.story.logline}. Reflect it "
              "naturally through the facts; never say it is a pattern or a story." if affected and spec.story else "")
@@ -226,19 +279,21 @@ async def write_document(spec: DocSpec, facts: dict[str, Any], affected: bool, n
         f"Style: {spec.style or 'realistic, professional'}. Length {spec.min_words}–{spec.max_words} words.\n"
         f"Title hint: {spec.title_template}\n"
         f"Sections (keep these titles and kinds; key_values -> pairs, table -> rows with a header row, list -> items, "
-        f"text -> body): {json.dumps(sections, ensure_ascii=False)}\n"
-        f"FACTS (the document must be consistent with them, do not invent conflicting values): "
-        f"{json.dumps(facts, ensure_ascii=False, default=str)}\n"
+        f"text -> body; data_table -> leave rows EMPTY, they are filled from the data automatically): "
+        f"{json.dumps(sections, ensure_ascii=False)}\n"
+        f"FACTS (the document must be consistent with them, do not invent conflicting values or recompute amounts): "
+        f"{json.dumps(shown, ensure_ascii=False, default=str)}\n"
         f"These values must appear exactly as written: {json.dumps(must, ensure_ascii=False)}\n"
         + ("Also fill email_subject, email_from and email_to (fictional addresses on example domains).\n"
            if spec.format == "eml" else "")
         + story + (f"\nFix these problems from the previous version: {notes}" if notes else "")
     )
-    return await get_llm().structured(
+    doc = await get_llm().structured(
         role="cheap", task="doc_write", prompt=prompt, schema=WrittenDocument,
-        mock_context={"spec": spec.model_dump(mode="json"), "facts": facts, "affected": affected, "notes": notes},
+        mock_context={"spec": spec.model_dump(mode="json"), "facts": shown, "affected": affected, "notes": notes},
         use_cache=not notes,
     )
+    return fill_data_tables(spec, doc, facts)
 
 
 # --------------------------------------------------------------------------- validation

@@ -2,13 +2,14 @@ import { useEffect, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { api, type Json } from '../api'
 import ReportTab from '../components/ReportTab'
+import FilesFromData from '../components/FilesFromData'
 import DataBrowser from '../components/DataBrowser'
 import { DashboardTab, DetectiveTab, GroundTruthTab, LogTab, SqlTab, WhatIfTab } from '../components/Tabs'
 import { VerdictChip } from './Home'
 
 const TABS: [string, string][] = [
   ['report', 'Report & důkaz'], ['data', 'Data browser'], ['dashboard', 'Dashboard'], ['sql', 'SQL'],
-  ['whatif', 'What-if'], ['detective', 'Detektiv'], ['truth', 'Ground truth'], ['log', 'Log & tokeny'],
+  ['whatif', 'What-if'], ['files', 'Soubory z dat'], ['detective', 'Detektiv'], ['truth', 'Ground truth'], ['log', 'Log & tokeny'],
 ]
 
 export default function RunView() {
@@ -49,10 +50,11 @@ export default function RunView() {
         {TABS.map(([id, label]) => <button key={id} className={`tab ${tab === id ? 'tab-active' : ''}`} onClick={() => go(id)}>{label}</button>)}
       </div>
       {tab === 'report' && (report ? <ReportTab report={report} onSql={(s) => { setSql(s); go('sql') }} /> : <div className="text-slate-500">Načítám report…</div>)}
-      {tab === 'data' && schema && <DataBrowser runId={run.run_id} schema={schema} />}
+      {tab === 'data' && schema && <DataBrowser runId={run.run_id} schema={schema} onFiles={(t) => setParams({ tab: 'files', table: t })} />}
       {tab === 'dashboard' && <DashboardTab runId={run.run_id} />}
       {tab === 'sql' && <SqlTab runId={run.run_id} initial={sql} />}
       {tab === 'whatif' && <WhatIfTab run={run} />}
+      {tab === 'files' && <FilesFromData runId={run.run_id} initialTable={params.get('table') ?? undefined} />}
       {tab === 'detective' && <DetectiveTab runId={run.run_id} />}
       {tab === 'truth' && <GroundTruthTab runId={run.run_id} />}
       {tab === 'log' && <LogTab run={run} />}

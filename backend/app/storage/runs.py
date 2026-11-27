@@ -152,7 +152,8 @@ def list_runs() -> list[dict[str, Any]]:
         item["kind"] = r.get("kind", "data")
         if item["kind"] == "documents":
             ds = r.get("doc_spec") or {}
-            item.update(format=ds.get("format"), count=ds.get("count"), document_type=ds.get("document_type"))
+            item.update(format=ds.get("format"), count=ds.get("count"), document_type=ds.get("document_type"),
+                        source_run_id=ds.get("source_run_id"), source_table=ds.get("source_table"))
         out.append(item)
     return out
 

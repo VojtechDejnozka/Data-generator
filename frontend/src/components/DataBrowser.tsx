@@ -51,7 +51,7 @@ function Erd({ schema, onPick }: { schema: Json; onPick: (t: string) => void }) 
   )
 }
 
-export default function DataBrowser({ runId, schema }: { runId: string; schema: Json }) {
+export default function DataBrowser({ runId, schema, onFiles }: { runId: string; schema: Json; onFiles?: (table: string) => void }) {
   const [view, setView] = useState<View>({ table: schema.tables[0]?.name, page: 1 })
   const [data, setData] = useState<Json>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -101,6 +101,7 @@ export default function DataBrowser({ runId, schema }: { runId: string; schema: 
             <input className="input py-1 text-xs" style={{ width: 150 }} value={fv} onChange={(e) => setFv(e.target.value)} placeholder="hodnota" onKeyDown={(e) => e.key === 'Enter' && go({ ...view, filter_col: fc, filter_val: fv, filter_op: fo, page: 1 })} />
             <button className="btn text-xs" onClick={() => go({ ...view, filter_col: fc, filter_val: fv, filter_op: fo, page: 1 })}>Filtrovat</button>
             {view.filter_col && <button className="btn text-xs" onClick={() => go({ table: view.table, page: 1 })}>✕</button>}
+            {onFiles && <button className="btn text-xs" title="Vygenerovat z řádků této tabulky soubory (faktury, dopisy…)" onClick={() => onFiles(view.table)}>📄 Soubory z tabulky</button>}
           </div>
           {err && <div className="text-red-700 text-sm">{err}</div>}
           {data && (
