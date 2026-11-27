@@ -47,6 +47,19 @@ WEEKDAY = [0.92, 0.9, 0.95, 1.0, 1.15, 1.25, 0.83]
 COMPLAINT_CATEGORIES = ["Nedostupnost zboží", "Kvalita zboží", "Cena", "Personál", "Fronty u pokladen", "Reklamace"]
 BASE_COMPLAINT_MIX = np.array([0.08, 0.28, 0.18, 0.18, 0.18, 0.10])
 VOLUME_VISITORS = {"small": 20, "medium": 45, "large": 90}
+# data size -> default entity counts (the planner may adapt them)
+SIZE_COUNTS = {
+    "small": {"suppliers": 6, "products": 120, "stores": 5, "customers": 600},
+    "medium": {"suppliers": 7, "products": 240, "stores": 10, "customers": 1500},
+    "large": {"suppliers": 8, "products": 400, "stores": 15, "customers": 3000},
+}
+DEFAULT_PERIOD = ("2025-01-01", "2026-03-31")
+
+
+def _period(inp: Optional[ScenarioInput]) -> tuple[dt.date, dt.date]:
+    if inp and inp.period_start and inp.period_end:
+        return dt.date.fromisoformat(inp.period_start), dt.date.fromisoformat(inp.period_end)
+    return dt.date.fromisoformat(DEFAULT_PERIOD[0]), dt.date.fromisoformat(DEFAULT_PERIOD[1])
 
 DEFAULT_PARAMS = {
     "safety_stock_days": 2.0,     # store replenishment policy (repairable)
@@ -228,15 +241,31 @@ class RetailSupplierDelay(ScenarioModule):
                            _col("status", "text", enum=["open", "resolved"])]),
         ]
 
+    def normalize_spec(self, spec: ScenarioSpec) -> tuple[ScenarioSpec, list[str]]:
+        spec, warnings = super().normalize_spec(spec)
+        spec = spec.model_copy(deep=True)
+        if not spec.meta.has_time:  # this simulator is inherently time-based
+            spec = spec.model_copy(update={"meta": spec.meta.model_copy(
+                update={"period_start": DEFAULT_PERIOD[0], "period_end": DEFAULT_PERIOD[1]})})
+            warnings.append(f"Simulátor je časový – doplněno období {DEFAULT_PERIOD[0]} – {DEFAULT_PERIOD[1]}.")
+        ds = spec.knob("delay_start_date")
+        if ds and not (spec.meta.period_start < ds.default < spec.meta.period_end):
+            a, b = dt.date.fromisoformat(spec.meta.period_start), dt.date.fromisoformat(spec.meta.period_end)
+            ds.default = (a + (b - a) * 45 // 100).isoformat()
+            warnings.append(f"delay_start_date mimo období – posunuto na {ds.default}.")
+        if spec.story.causal_chain and ds:
+            spec.story.causal_chain[0].start = ds.default
+        return spec, warnings
+
     def dimension_tables(self) -> list[str]:
         return ["suppliers", "products", "stores", "customers"]
 
     def knobs(self, inp: Optional[ScenarioInput] = None) -> list[Knob]:
-        start = dt.date.fromisoformat(inp.period_start) if inp else dt.date(2025, 1, 1)
-        end = dt.date.fromisoformat(inp.period_end) if inp else dt.date(2026, 3, 31)
+        start, end = _period(inp)
         delay_start = start + (end - start) * 45 // 100
-        n_sup = (inp.entity_counts.get("suppliers") if inp else None) or 7
-        intensity = inp.story_intensity if inp else 1.0
+        size = inp.volume if inp else "medium"
+        n_sup = (inp.entity_counts.get("suppliers") if inp else None) or SIZE_COUNTS[size]["suppliers"]
+        intensity = inp.story_intensity if inp and inp.story_intensity is not None else 1.0
         visitors = VOLUME_VISITORS.get(inp.volume if inp else "medium", 45)
         return [
             Knob(name="supplier_id", label="Problémový dodavatel", type="entity", default="2", min=1, max=n_sup,
@@ -430,7 +459,7 @@ class RetailSupplierDelay(ScenarioModule):
 
     # ------------------------------------------------------------------ spec template
     def default_spec(self, inp: ScenarioInput) -> ScenarioSpec:
-        counts = {"suppliers": 7, "products": 240, "stores": 10, "customers": 1500}
+        counts = dict(SIZE_COUNTS[inp.volume])
         counts.update({k: int(v) for k, v in inp.entity_counts.items() if k in counts and v})
         tables = self.tables()
         for t in tables:
@@ -484,7 +513,8 @@ class RetailSupplierDelay(ScenarioModule):
         )
         return ScenarioSpec(
             meta=Meta(name="Síť prodejen – zpoždění dodavatele", domain="retail", data_language=inp.data_language,
-                      period_start=inp.period_start, period_end=inp.period_end, seed=inp.seed, archetype=self.id,
+                      period_start=_period(inp)[0].isoformat(), period_end=_period(inp)[1].isoformat(),
+                      seed=inp.seed, archetype=self.id,
                       company=inp.company, environment=inp.environment),
             tables=tables, story=story, knobs=knobs, invariants=self.invariants(), evidence=self.evidence(),
             dashboard=Dashboard(title="Přehled sítě prodejen", widgets=self.dashboard_widgets()),

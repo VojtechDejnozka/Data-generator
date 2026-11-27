@@ -78,6 +78,13 @@ Knihovna efektových primitiv (`effects.py`: ramp/step/trend/sezónnost/okno/šu
 (CHEAP generuje řádky po dávkách s platnými FK, časovým oknem dávky a kroky příběhu; výstup je
 validovaný proti JSON schématu a pravidlům a chybné dávky se opakují).
 
+### Vstup
+Uživatel zadává jen **popis příběhu**, **velikost dat** (malý / střední / velký) a **seed**. Zbytek navrhne STRONG
+model a v review je vše editovatelné: popis firmy a prostředí, počty entit, intenzita příběhu, knoby a také
+**zda data mají časovou osu**. Příběhy, které nejsou o vývoji v čase, mají `period_start/period_end = null` a
+generují se bez časových oken (cesta `llm_rows`). Simulátor `retail_supplier_delay` je časový, takže období
+vždy doplní (model ho zvolí podle příběhu, jinak 2025-01 – 2026-03).
+
 ### Datové kontrakty
 `backend/app/contracts/` – `ScenarioSpec` (meta, tables, story/causal_chain/distractors, knobs,
 invariants, evidence, dashboard), `PlannerResponse`, `GenerationPlan`, `ValidationVerdict`. Všechna
@@ -106,8 +113,9 @@ historie), `evidence.json`, `checks.json`, `dashboard.json`, `manifest.json` (gr
 
 Předem: `make seed` (nebo `make seed-mock`) a `make dev`. Otevřete http://127.0.0.1:5173.
 
-1. **Zadání (30 s)** – *Nový scénář* → *⚡ Preset*. Ukažte popis firmy, příběh a parametry (prodejny,
-   produkty, dodavatelé, období, objem, intenzita, seed). *Navrhnout scénář* → průběh (SSE).
+1. **Zadání (30 s)** – *Nový scénář* → *⚡ Preset*. Uživatel zadává jen **popis příběhu, velikost dat a seed**;
+   firmu, prostředí, počty entit, intenzitu i to, zda data potřebují časovou osu (a jaké období),
+   rozhodne Gemini. *Navrhnout scénář* → průběh (SSE).
 2. **Review specu (45 s)** – archetyp `retail_supplier_delay`, kauzální řetězec s1–s4 na časové ose,
    distraktory, 13 tabulek (fialová = simulace, modrá/zelená = LLM), knoby, invarianty, důkazní dotazy.
    Přijměte návrh „promotions“ (tabulka přes `llm_rows`) → *Schválit a generovat*. Fáze pipeline běží živě.

@@ -93,8 +93,9 @@ scripts/                 dev.sh, demo seed
 ```
 
 ## 4. Data contracts (summary – see `backend/app/contracts`)
-* `ScenarioInput` – company, environment, story, complexity params (counts, period, volume,
-  story_intensity, seed), optional custom data model text.
+* `ScenarioInput` – from the UI only `story`, `volume` (data size) and `seed`; the STRONG planner decides
+  company, environment, entity counts, story intensity and whether there is a time dimension (period is
+  optional – `null` for non-temporal data). Optional fields remain for scripts/tests.
 * `ScenarioSpec` – `meta` (name, domain, data_language, period_start/end, seed, archetype),
   `tables[]` (name, description, row_count, strategy, columns[name, type, description, pk, fk,
   nullable, enum_values, min, max]), `story` (logline, causal_chain[step: id, mechanism, affected

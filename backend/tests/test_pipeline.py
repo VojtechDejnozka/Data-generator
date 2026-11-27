@@ -75,3 +75,62 @@ def test_planner_falls_back_to_template_when_llm_fails(monkeypatch):
     pr = run(plan_scenario(SMALL))
     assert pr.spec.meta.archetype == "retail_supplier_delay" and "nedostupný" in pr.notes
     assert pr.spec.table("stores").row_count == 4
+
+
+def test_minimal_input_planner_decides_rest():
+    from app.contracts.io import ScenarioInput
+
+    inp = ScenarioInput(story="Síti prodejen klesají tržby, protože mlékárna dodává pozdě.", volume="small", seed=7)
+    pr = run(plan_scenario(inp))
+    spec = pr.spec
+    assert spec.meta.has_time and spec.meta.company  # decided by the (mock) planner
+    assert spec.meta.seed == 7
+    assert spec.table("stores").row_count == 5  # small size defaults
+    ds = spec.knob("delay_start_date").default
+    assert spec.meta.period_start < ds < spec.meta.period_end
+    assert spec.story.causal_chain[0].start == ds
+
+
+def test_timeless_llm_rows_scenario_runs():
+    """A story without a time dimension: no period, no date columns, generic llm_rows path."""
+    from app.contracts.spec import Column, Meta, ScenarioSpec, Story, CausalStep, Table, EvidenceQuery
+
+    spec = ScenarioSpec(
+        meta=Meta(name="Knihovna", domain="library", period_start=None, period_end=None, seed=3),
+        tables=[
+            Table(name="genres", strategy="llm_dimension", row_count=8, columns=[
+                Column(name="genre_id", type="int", pk=True), Column(name="name", type="text")]),
+            Table(name="books", strategy="llm_rows", row_count=40, columns=[
+                Column(name="book_id", type="int", pk=True), Column(name="title", type="text"),
+                Column(name="genre_id", type="int", fk="genres.genre_id"),
+                Column(name="pages", type="int", min=50, max=1200),
+                Column(name="format", type="text", enum_values=["vázaná", "brožovaná"])]),
+        ],
+        story=Story(logline="Detektivky jsou výrazně delší než ostatní žánry.",
+                    causal_chain=[CausalStep(id="s1", mechanism="Detektivky mají více stran", tables=["books"])]),
+        evidence=[EvidenceQuery(id="e1", title="Průměrná délka podle žánru", chart="bar", x="name", y=["avg_pages"],
+                                sql="SELECT g.name, AVG(b.pages) AS avg_pages FROM books b "
+                                    "JOIN genres g ON g.genre_id=b.genre_id GROUP BY 1")],
+    )
+    assert not spec.meta.has_time and spec.structural_errors() == []
+    job = Job(id="t", kind="run")
+    rid = run(execute_run(RunRequest(spec=spec), job))["run_id"]
+    meta = store.load_run(rid)
+    assert meta["status"] == "done" and meta["checks_summary"]["errors"] == 0, meta["checks_summary"]
+    assert meta["row_counts"]["books"] >= 32 and meta["row_counts"]["genres"] == 8
+    ev = store.load_json(rid, "evidence.json")
+    assert ev[0]["ok"] and ev[0]["rows"]
+
+
+def test_period_must_be_both_or_neither():
+    import pytest
+    from pydantic import ValidationError
+
+    from app.contracts.io import ScenarioInput
+    from app.generation.scenarios.registry import RETAIL
+
+    data = RETAIL.default_spec(ScenarioInput(story="Testovací příběh")).model_dump()
+    data["meta"]["period_end"] = None
+    with pytest.raises(ValidationError):
+        from app.contracts.spec import ScenarioSpec
+        ScenarioSpec.model_validate(data)

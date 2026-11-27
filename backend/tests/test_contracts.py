@@ -9,7 +9,7 @@ from app.contracts.io import PlannerResponse
 
 
 def _spec():
-    return RETAIL.default_spec(ScenarioInput(company="x", story="y"))
+    return RETAIL.default_spec(ScenarioInput(company="x", story="Testovací příběh"))
 
 
 def test_default_spec_is_structurally_valid():

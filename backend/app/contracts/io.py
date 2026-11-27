@@ -10,15 +10,19 @@ from .spec import CausalStep, Column, Distractor, Knob, ScenarioSpec, Table
 
 # --------------------------------------------------------------------------- input
 class ScenarioInput(BaseModel):
-    company: str = Field(..., max_length=4000)
-    environment: str = Field("", max_length=4000)
-    story: str = Field(..., max_length=6000)
-    entity_counts: dict[str, int] = Field(default_factory=dict)
-    period_start: str = "2025-01-01"
-    period_end: str = "2026-03-31"
+    """User input. Only `story`, `volume` (data size) and `seed` come from the UI; everything else is
+    decided by the STRONG planner (company, environment, entity counts, whether there is a time
+    dimension and which period). The optional fields remain for scripts/tests that want to pin them."""
+
+    story: str = Field(..., min_length=10, max_length=8000)
     volume: Literal["small", "medium", "large"] = "medium"
-    story_intensity: float = Field(1.0, ge=0, le=2)
     seed: int = 42
+    company: str = Field("", max_length=4000)
+    environment: str = Field("", max_length=4000)
+    entity_counts: dict[str, int] = Field(default_factory=dict)
+    period_start: Optional[str] = None
+    period_end: Optional[str] = None
+    story_intensity: Optional[float] = Field(None, ge=0, le=2)
     custom_model: str = Field("", max_length=8000, description="Optional user data model / ontology")
     data_language: str = "cs"
     preset: Optional[str] = None

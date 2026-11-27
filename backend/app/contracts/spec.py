@@ -189,8 +189,8 @@ class Meta(BaseModel):
     name: str
     domain: str = "retail"
     data_language: str = "cs"
-    period_start: str
-    period_end: str
+    period_start: Optional[str] = Field(None, description="ISO date; null if the data has no time dimension")
+    period_end: Optional[str] = Field(None, description="ISO date; null if the data has no time dimension")
     seed: int = 42
     archetype: Optional[str] = Field(None, description="Scenario module id if a simulator fits, else null")
     company: str = ""
@@ -198,8 +198,14 @@ class Meta(BaseModel):
 
     @field_validator("period_start", "period_end")
     @classmethod
-    def _date(cls, v: str) -> str:
+    def _date(cls, v: Optional[str]) -> Optional[str]:
+        if v in (None, "", "null"):
+            return None
         return dt.date.fromisoformat(v[:10]).isoformat()
+
+    @property
+    def has_time(self) -> bool:
+        return bool(self.period_start and self.period_end)
 
 
 class ScenarioSpec(BaseModel):
@@ -217,7 +223,9 @@ class ScenarioSpec(BaseModel):
         dup = {n for n in names if names.count(n) > 1}
         if dup:
             raise ValueError(f"duplicate tables: {sorted(dup)}")
-        if self.meta.period_end <= self.meta.period_start:
+        if bool(self.meta.period_start) != bool(self.meta.period_end):
+            raise ValueError("set both period_start and period_end, or neither (no time dimension)")
+        if self.meta.has_time and self.meta.period_end <= self.meta.period_start:
             raise ValueError("period_end must be after period_start")
         return self
 

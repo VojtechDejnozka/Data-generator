@@ -42,7 +42,7 @@ def retail_dataset(tmp_path_factory):
     from app.generation.scenarios.base import GenContext
     from app.generation.scenarios.registry import RETAIL
 
-    inp = ScenarioInput(company="Test", environment="Česko", story="x",
+    inp = ScenarioInput(company="Test", environment="Česko", story="Testovací příběh",
                         entity_counts={"stores": 5, "products": 80, "customers": 300},
                         period_start="2025-01-01", period_end="2025-12-31", volume="small")
     spec = RETAIL.default_spec(inp)

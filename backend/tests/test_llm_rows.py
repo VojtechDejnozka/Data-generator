@@ -31,7 +31,7 @@ def test_validate_rows_catches_bad_fk_range_date():
 
 
 def test_generate_table_mock():
-    spec = RETAIL.default_spec(ScenarioInput(company="x", story="y"))
+    spec = RETAIL.default_spec(ScenarioInput(company="x", story="Testovací příběh"))
     spec = spec.model_copy(update={"tables": [*spec.tables, PROMO]})
     products = pd.DataFrame({"product_id": range(1, 21), "name": [f"P{i}" for i in range(1, 21)]})
     df, stats = run(generate_table(spec, PROMO, {"products": products}, batch_size=10))

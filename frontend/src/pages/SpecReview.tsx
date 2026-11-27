@@ -154,10 +154,23 @@ export default function SpecReview() {
           </div>
           <div className="grid md:grid-cols-4 gap-3">
             <div className="md:col-span-2"><label className="label">Název</label><input className="input" value={spec.meta.name} onChange={(e) => setSpec({ ...spec, meta: { ...spec.meta, name: e.target.value } })} /></div>
-            <div><label className="label">Od</label><input type="date" className="input" value={spec.meta.period_start} onChange={(e) => setSpec({ ...spec, meta: { ...spec.meta, period_start: e.target.value } })} /></div>
-            <div><label className="label">Do</label><input type="date" className="input" value={spec.meta.period_end} onChange={(e) => setSpec({ ...spec, meta: { ...spec.meta, period_end: e.target.value } })} /></div>
+            {spec.meta.period_start !== null ? (
+              <>
+                <div><label className="label">Od</label><input type="date" className="input" value={spec.meta.period_start ?? ''} onChange={(e) => setSpec({ ...spec, meta: { ...spec.meta, period_start: e.target.value } })} /></div>
+                <div><label className="label">Do <button className="text-[10px] text-slate-500 underline ml-1 cursor-pointer" disabled={!!spec.meta.archetype} title={spec.meta.archetype ? 'Simulátor vyžaduje časovou osu' : ''} onClick={() => setSpec({ ...spec, meta: { ...spec.meta, period_start: null, period_end: null } })}>odebrat časovou osu</button></label><input type="date" className="input" value={spec.meta.period_end ?? ''} onChange={(e) => setSpec({ ...spec, meta: { ...spec.meta, period_end: e.target.value } })} /></div>
+              </>
+            ) : (
+              <div className="md:col-span-2 text-sm text-slate-600 self-end pb-1.5">
+                Data bez časové osy.{' '}
+                <button className="text-blue-700 underline cursor-pointer" onClick={() => setSpec({ ...spec, meta: { ...spec.meta, period_start: '2025-01-01', period_end: '2025-12-31' } })}>Přidat období</button>
+              </div>
+            )}
             <div><label className="label">Seed</label><input type="number" className="input" value={spec.meta.seed} onChange={(e) => setSpec({ ...spec, meta: { ...spec.meta, seed: Number(e.target.value) } })} /></div>
             <div><label className="label">Jazyk dat</label><input className="input" value={spec.meta.data_language} onChange={(e) => setSpec({ ...spec, meta: { ...spec.meta, data_language: e.target.value } })} /></div>
+          </div>
+          <div className="grid md:grid-cols-2 gap-3 mt-3">
+            <div><label className="label">Firma (navrhl model)</label><textarea className="input h-20 text-xs" value={spec.meta.company} onChange={(e) => setSpec({ ...spec, meta: { ...spec.meta, company: e.target.value } })} /></div>
+            <div><label className="label">Prostředí (navrhl model)</label><textarea className="input h-20 text-xs" value={spec.meta.environment} onChange={(e) => setSpec({ ...spec, meta: { ...spec.meta, environment: e.target.value } })} /></div>
           </div>
           {resp.notes && <pre className="mt-3 text-xs bg-slate-50 border border-slate-200 rounded p-2 whitespace-pre-wrap">{resp.notes}</pre>}
         </div>

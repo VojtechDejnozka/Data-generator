@@ -45,7 +45,7 @@ export default function ReportTab({ report, onSql }: { report: Json; onSql: (sql
           <div className="text-xs text-slate-500 mb-1">Scénář</div>
           <div className="font-semibold">{report.meta.name}</div>
           <div className="text-sm text-slate-600 mt-1">{report.story.logline}</div>
-          <div className="text-xs text-slate-500 mt-2">{report.meta.period_start} – {report.meta.period_end} · seed {report.meta.seed} · {report.meta.archetype ?? 'llm_rows'}</div>
+          <div className="text-xs text-slate-500 mt-2">{report.meta.period_start ? `${report.meta.period_start} – ${report.meta.period_end}` : 'bez časové osy'} · seed {report.meta.seed} · {report.meta.archetype ?? 'llm_rows'}</div>
         </div>
         <div className="card p-4">
           <div className="text-xs text-slate-500 mb-1">Kvalita dat</div>

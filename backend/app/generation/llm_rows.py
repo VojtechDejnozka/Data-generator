@@ -88,7 +88,9 @@ def _py(v: Any) -> Any:
     return v
 
 
-def _windows(spec: ScenarioSpec, n: int) -> list[tuple[str, str]]:
+def _windows(spec: ScenarioSpec, n: int) -> list[Optional[tuple[str, str]]]:
+    if not spec.meta.has_time:
+        return [None] * n
     a = dt.date.fromisoformat(spec.meta.period_start)
     b = dt.date.fromisoformat(spec.meta.period_end)
     span = (b - a).days + 1
@@ -100,7 +102,7 @@ def _windows(spec: ScenarioSpec, n: int) -> list[tuple[str, str]]:
     return out
 
 
-def validate_rows(table: Table, rows: list[dict], fk_ids: dict[str, set], period: tuple[str, str],
+def validate_rows(table: Table, rows: list[dict], fk_ids: dict[str, set], period: Optional[tuple[str, str]],
                   used_keys: set) -> tuple[list[dict], list[str]]:
     good, errors = [], []
     for i, r in enumerate(rows):
@@ -120,7 +122,8 @@ def validate_rows(table: Table, rows: list[dict], fk_ids: dict[str, set], period
                     d = dt.date.fromisoformat(str(v)[:10])
                     if c.type == "datetime":
                         dt.datetime.fromisoformat(str(v))
-                    if not (period[0] <= d.isoformat() <= period[1]) and "date" in c.name and table.strategy == "llm_rows":
+                    if period and not (period[0] <= d.isoformat() <= period[1]) and "date" in c.name \
+                            and table.strategy == "llm_rows":
                         err = f"row {i}: {c.name}={v} outside scenario period {period}"
                 except ValueError:
                     err = f"row {i}: {c.name}={v} is not ISO formatted"
@@ -150,7 +153,7 @@ async def generate_table(spec: ScenarioSpec, table: Table, existing: dict[str, p
     Batch = row_model(table)
     fk = _fk_options(spec, table, existing)
     fk_ids = {k: set(v["all_ids"]) for k, v in fk.items()}
-    period = (spec.meta.period_start, spec.meta.period_end)
+    period = (spec.meta.period_start, spec.meta.period_end) if spec.meta.has_time else None
     windows = _windows(spec, n_batches)
     steps = [s.model_dump() for s in spec.story.causal_chain if table.name in s.tables] or \
             [s.model_dump() for s in spec.story.causal_chain]
@@ -169,9 +172,10 @@ async def generate_table(spec: ScenarioSpec, table: Table, existing: dict[str, p
         base_prompt = (
             f"Generate exactly {k} rows for table '{table.name}' ({table.description}).\n"
             f"Data language: {spec.meta.data_language}. Company: {spec.meta.company[:300]}\n"
-            f"Scenario period: {period[0]} .. {period[1]}. This batch {i + 1}/{n_batches} covers dates {w[0]} .. {w[1]} "
-            f"(put date/time columns of event-like rows into this window).\n"
-            f"Columns: {json.dumps(cols_desc, ensure_ascii=False)}\n"
+            + (f"Scenario period: {period[0]} .. {period[1]}. This batch {i + 1}/{n_batches} covers dates {w[0]} .. "
+               f"{w[1]} (put date/time columns of event-like rows into this window).\n" if period else
+               f"The data has no time dimension (batch {i + 1}/{n_batches}).\n")
+            + f"Columns: {json.dumps(cols_desc, ensure_ascii=False)}\n"
             f"Valid foreign key values (id + label): {json.dumps(fk_prompt, ensure_ascii=False)[:6000]}\n"
             f"Story (make the data consistent with it, effects only for affected entities and after their start "
             f"date): {spec.story.logline}\nRelevant causal steps: {json.dumps(steps, ensure_ascii=False)[:3000]}\n"

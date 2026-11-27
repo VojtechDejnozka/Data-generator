@@ -180,8 +180,9 @@ def _rows(prompt: str, ctx: dict) -> dict:
 
     t = ctx["table"]
     r = _rng(t["name"], ctx["batch"], ctx["attempt"], ctx.get("seed"))
-    a = dt.date.fromisoformat(ctx["window"][0])
-    b = dt.date.fromisoformat(ctx["window"][1])
+    window = ctx.get("window") or ("2025-01-01", "2025-12-31")
+    a = dt.date.fromisoformat(window[0])
+    b = dt.date.fromisoformat(window[1])
     span = max((b - a).days, 0)
     rows = []
     pk = [c["name"] for c in t["columns"] if c.get("pk")]
@@ -299,6 +300,12 @@ def _plan_archetype(prompt: str, ctx: dict) -> dict:
     return {
         "use_archetype": True,
         "name": "Síť prodejen – zpožďující se dodavatel",
+        "company": "Dobrý Košík a.s. – regionální síť supermarketů v Česku (potraviny a drogerie), věrnostní program, "
+                   "periodické objednávky u několika dodavatelů.",
+        "environment": "Česká republika, konkurenční potravinový retail; sezónnost Vánoce a léto, víkendová špička; "
+                       "čítače návštěvnosti u vstupu.",
+        "period_start": inp.get("period_start") or "2025-01-01",
+        "period_end": inp.get("period_end") or "2026-03-31",
         "logline": full["spec"]["story"]["logline"],
         "knob_defaults": [{"name": "story_intensity", "value": str(inp.get("story_intensity", 1.0))}],
         "row_counts": [{"name": k, "value": str(v)} for k, v in (inp.get("entity_counts") or {}).items()],
