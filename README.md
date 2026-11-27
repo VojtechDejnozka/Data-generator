@@ -104,6 +104,26 @@ v promptu. Pokud plánovaný příběh odpovídá modulu, STRONG vrací jen komp
 - Reprodukovatelnost: nezávislé RNG proudy na komponentu (`[seed, stream]`), takže změna knobu
   neposune náhodnost jiných částí. What-if běhy mají **identickou poptávku**.
 
+## Generátor dokumentů (záložka *Dokumenty*)
+Stejná pipeline pro nestrukturované výstupy – lékařské zprávy, dopisy, e-maily, posudky, reporty…
+Formáty **PDF, HTML, Markdown, TXT, JSON, e-mail (.eml)**.
+
+1. **Zadání:** popis požadovaných dokumentů, počet, formát, seed; volitelně **navázání na tabulku existujícího
+   datového běhu** (1 řádek = 1 dokument, např. stížnosti → formální odpovědi zákazníkům).
+2. **Plán (STRONG):** typ dokumentu, **fakta** (typovaná pole; „musí zaznít“ = hodnota musí být v textu),
+   **sekce** (text / seznam / klíč–hodnota / tabulka), styl, rozsah slov a volitelně **skrytý vzor**
+   (např. „pacienti na léku X mají zvýšené ALT“) jako změny faktů u části dokumentů. Vše editovatelné v review.
+3. **Fakta:** CHEAP model přes cestu `llm_rows` (validace typů, rozsahů, výčtů), nebo řádky zdrojové tabulky.
+4. **Skrytý vzor** se vkládá deterministicky (seed) do vybraných dokumentů; jejich ID jsou jen v ground truth.
+5. **Psaní (CHEAP):** každý dokument vzniká strukturovaně z faktů. **Kontroly:** všechny sekce, doslovné
+   zmínění povinných faktů (včetně variant zápisu čísel a dat), délka, žádné placeholdery. Chybné dokumenty se
+   přepíšou s chybovou hláškou (max. 2 iterace).
+6. **Vykreslení + validace (STRONG)** na vzorku dokumentů a statistikách zasažených vs. ostatních.
+7. **Výstup:** náhled a stažení dokumentů, fakta jako SQLite/SQL, ZIP export, ground truth na vyžádání.
+
+Každý dokument nese viditelné označení **„SYNTETICKÝ DOKUMENT“** (u PDF v patičce), aby nemohl být zaměněn
+za skutečný záznam. PDF používá písmo DejaVu Sans (licence v `backend/app/documents/fonts/LICENSE_DEJAVU`).
+
 ## Výstupy běhu (`runs/<run_id>/`)
 `data.sqlite`, `run.json` (spec, plán, knoby, verdikt, kontroly, signály, spotřeba tokenů, repair
 historie), `evidence.json`, `checks.json`, `dashboard.json`, `manifest.json` (ground truth),

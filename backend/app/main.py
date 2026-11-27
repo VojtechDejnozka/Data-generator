@@ -271,7 +271,7 @@ def run_query(run_id: str, req: QueryRequest) -> dict:
     run = _run_or_404(run_id)
     try:
         res = run_readonly(store.db_path(run_id), req.sql, limit=req.limit, timeout_s=10,
-                           knobs=run.get("knob_values", {}), meta=run["spec"]["meta"])
+                           knobs=run.get("knob_values", {}), meta=(run.get("spec") or {}).get("meta", {}))
     except SQLGuardError as e:
         raise HTTPException(400, str(e))
     return res.to_dict()
@@ -338,3 +338,114 @@ def export_db(run_id: str) -> FileResponse:
     _run_or_404(run_id)
     return FileResponse(store.db_path(run_id), media_type="application/vnd.sqlite3",
                         filename=f"story2data-{run_id}.sqlite")
+
+
+# =========================================================================== documents (unstructured outputs)
+from .contracts.docs import DocInput, DocPlannerResponse, DocReplanRequest, DocRunRequest, WrittenDocument  # noqa: E402
+from .documents.pipeline import execute_doc_run, plan_docs, replan_docs  # noqa: E402
+from .documents.render import MIME, doc_text, preview_html  # noqa: E402
+
+
+def _doc_run_or_404(run_id: str) -> dict:
+    run = _run_or_404(run_id)
+    if run.get("kind") != "documents":
+        raise HTTPException(404, "not a document run")
+    return run
+
+
+@app.post("/api/docs/plan")
+async def docs_start_plan(inp: DocInput) -> dict:
+    if inp.source_run_id:
+        _run_or_404(inp.source_run_id)
+
+    async def work(job):
+        job.emit("plan", "STRONG model navrhuje specifikaci dokumentů", 0.1)
+        resp = await plan_docs(inp)
+        sid = secrets.token_hex(6)
+        _save_session(sid, {"session_id": sid, "kind": "documents", "round": 0, "input": inp.model_dump(),
+                            "response": resp.model_dump(mode="json")})
+        return {"session_id": sid}
+
+    return {"job_id": jobs.start("doc_plan", work).id}
+
+
+@app.get("/api/docs/plan/{sid}")
+def docs_session(sid: str) -> dict:
+    return _load_session(sid)
+
+
+@app.post("/api/docs/plan/{sid}/replan")
+async def docs_replan(sid: str, req: DocReplanRequest) -> dict:
+    session = _load_session(sid)
+    if session["round"] >= MAX_REPLAN_ROUNDS:
+        raise HTTPException(400, f"maximum {MAX_REPLAN_ROUNDS} re-planning rounds reached")
+
+    async def work(job):
+        job.emit("plan", "Přeplánování dokumentů", 0.1)
+        resp = await replan_docs(req)
+        session["round"] += 1
+        session["response"] = resp.model_dump(mode="json")
+        _save_session(sid, session)
+        return {"session_id": sid}
+
+    return {"job_id": jobs.start("doc_replan", work).id}
+
+
+@app.post("/api/docs/runs")
+async def docs_start_run(req: DocRunRequest) -> dict:
+    return {"job_id": jobs.start("doc_run", lambda job: execute_doc_run(req, job)).id}
+
+
+@app.get("/api/docs/runs/{run_id}")
+def docs_run(run_id: str) -> dict:
+    run = _doc_run_or_404(run_id)
+    run.pop("llm_calls", None)
+    return run
+
+
+@app.get("/api/docs/runs/{run_id}/doc/{doc_id}")
+def docs_document(run_id: str, doc_id: int) -> dict:
+    _doc_run_or_404(run_id)
+    written = store.load_json(run_id, "written.json", {}) or {}
+    if str(doc_id) not in written:
+        raise HTTPException(404, "document not found")
+    doc = WrittenDocument.model_validate(written[str(doc_id)])
+    conn = sqlite3.connect(f"file:{store.db_path(run_id)}?mode=ro", uri=True)
+    try:
+        cur = conn.execute("SELECT * FROM facts WHERE doc_id = ?", (doc_id,))
+        cols = [d[0] for d in cur.description]
+        row = cur.fetchone()
+    finally:
+        conn.close()
+    return {"doc_id": doc_id, "facts": dict(zip(cols, row)) if row else {}, "html": preview_html(doc),
+            "text": doc_text(doc), "document": doc.model_dump()}
+
+
+@app.get("/api/docs/runs/{run_id}/files/{fname}")
+def docs_file(run_id: str, fname: str, download: bool = False) -> FileResponse:
+    run = _doc_run_or_404(run_id)
+    if not any(d["file"] == fname for d in run.get("documents", [])):
+        raise HTTPException(404, "file not found")
+    fmt = run["doc_spec"]["format"]
+    return FileResponse(store.run_path(run_id) / "documents" / fname, media_type=MIME[fmt],
+                        filename=fname if download else None,
+                        content_disposition_type="attachment" if download else "inline")
+
+
+@app.get("/api/docs/runs/{run_id}/export.zip")
+def docs_export(run_id: str) -> Response:
+    import io
+    import zipfile
+
+    run = _doc_run_or_404(run_id)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for d in run.get("documents", []):
+            z.write(store.run_path(run_id) / "documents" / d["file"], f"documents/{d['file']}")
+        facts = store.read_table(run_id, "facts")
+        z.writestr("facts.csv", facts.to_csv(index=False))
+        z.writestr("doc_spec.json", json.dumps(run["doc_spec"], ensure_ascii=False, indent=1))
+        z.writestr("README.txt", "Syntetické dokumenty vygenerované nástrojem Story2Data. Neobsahují skutečné osobní "
+                                 "údaje. Ground truth (skrytý vzor) není součástí exportu.\n")
+    return Response(buf.getvalue(), media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="story2data-docs-{run_id}.zip"'})

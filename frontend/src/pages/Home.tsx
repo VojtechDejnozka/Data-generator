@@ -15,7 +15,7 @@ export default function Home() {
   const [runs, setRuns] = useState<Json[] | null>(null)
   const [sel, setSel] = useState<string[]>([])
   const nav = useNavigate()
-  useEffect(() => { api.runs().then(setRuns).catch(() => setRuns([])) }, [])
+  useEffect(() => { api.runs().then((r) => setRuns(r.filter((x) => x.kind !== 'documents'))).catch(() => setRuns([])) }, [])
   const toggle = (id: string) => setSel((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id].slice(-2)))
 
   return (

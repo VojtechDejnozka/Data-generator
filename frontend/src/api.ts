@@ -179,6 +179,13 @@ export const api = {
   commentary: (id: string) => req<{ headline: string; paragraphs: string[] }>('POST', `/api/runs/${id}/commentary`),
   startDetective: (id: string) => req<{ job_id: string }>('POST', `/api/runs/${id}/detective`),
   detective: (id: string) => req<Json>('GET', `/api/runs/${id}/detective`),
+  // documents pipeline
+  docsPlan: (input: Json) => req<{ job_id: string }>('POST', '/api/docs/plan', input),
+  docsSession: (sid: string) => req<Json>('GET', `/api/docs/plan/${sid}`),
+  docsReplan: (sid: string, body: Json) => req<{ job_id: string }>('POST', `/api/docs/plan/${sid}/replan`, body),
+  docsStartRun: (body: Json) => req<{ job_id: string }>('POST', '/api/docs/runs', body),
+  docsRun: (id: string) => req<Json>('GET', `/api/docs/runs/${id}`),
+  docsDocument: (id: string, docId: number) => req<Json>('GET', `/api/docs/runs/${id}/doc/${docId}`),
 }
 
 /** Subscribe to job progress over SSE. Returns an unsubscribe function. */

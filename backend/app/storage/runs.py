@@ -147,8 +147,13 @@ def list_runs() -> list[dict[str, Any]]:
             r = json.loads(p.read_text())
         except json.JSONDecodeError:
             continue
-        out.append({k: r.get(k) for k in ("run_id", "label", "status", "created_at", "parent_run_id",
-                                            "knob_values", "verdict", "row_counts", "name", "mock")})
+        item = {k: r.get(k) for k in ("run_id", "label", "status", "created_at", "parent_run_id",
+                                      "knob_values", "verdict", "row_counts", "name", "mock")}
+        item["kind"] = r.get("kind", "data")
+        if item["kind"] == "documents":
+            ds = r.get("doc_spec") or {}
+            item.update(format=ds.get("format"), count=ds.get("count"), document_type=ds.get("document_type"))
+        out.append(item)
     return out
 
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import random
 from typing import Any
 
@@ -313,3 +314,134 @@ def _plan_archetype(prompt: str, ctx: dict) -> dict:
         "suggestions": full["suggestions"],
         "notes": "Mock planner (archetype mode): šablona modulu retail_supplier_delay upravena podle zadání.",
     }
+
+
+# --------------------------------------------------------------------------- documents
+_MED_SPEC = {
+    "name": "Propouštěcí zprávy – interní oddělení", "document_type": "propouštěcí zpráva",
+    "description": "Propouštěcí zprávy pacientů interního oddělení regionální nemocnice",
+    "style": "Odborný lékařský styl, stručné věty, česká lékařská terminologie", "min_words": 120, "max_words": 450,
+    "title_template": "Propouštěcí zpráva – {patient_name}",
+    "facts": [
+        {"name": "patient_name", "type": "text", "description": "Jméno a příjmení pacienta (fiktivní)", "must_mention": True},
+        {"name": "birth_year", "type": "int", "min": 1935, "max": 2005, "must_mention": True},
+        {"name": "sex", "type": "text", "enum_values": ["muž", "žena"]},
+        {"name": "admission_date", "type": "date", "description": "Datum přijetí", "must_mention": True},
+        {"name": "length_of_stay_days", "type": "int", "min": 1, "max": 21, "must_mention": True},
+        {"name": "diagnosis", "type": "text", "enum_values": ["Pneumonie", "Hypertenze", "Diabetes mellitus 2. typu",
+                                                               "Gastritida", "Fibrilace síní"], "must_mention": True},
+        {"name": "medication", "type": "text", "enum_values": ["Metformin", "Ramipril", "Novafen", "Amoxicilin",
+                                                                "Omeprazol"], "must_mention": True},
+        {"name": "alt_ukat_l", "type": "float", "min": 0.1, "max": 0.8, "description": "ALT (µkat/l)", "must_mention": True},
+        {"name": "glucose_mmol_l", "type": "float", "min": 3.9, "max": 9.5, "description": "Glykémie nalačno"},
+        {"name": "outcome", "type": "text", "enum_values": ["zlepšen", "stabilizován", "překlad na jiné oddělení"]},
+    ],
+    "sections": [
+        {"title": "Identifikace pacienta", "kind": "key_values", "instructions": "Jméno, rok narození, pohlaví, datum přijetí, délka hospitalizace"},
+        {"title": "Anamnéza a průběh hospitalizace", "kind": "text", "instructions": "Důvod přijetí, průběh, léčba"},
+        {"title": "Laboratorní výsledky", "kind": "table", "instructions": "Tabulka Parametr | Hodnota | Referenční mez"},
+        {"title": "Závěr a doporučení", "kind": "list", "instructions": "Diagnóza, medikace, kontroly"},
+    ],
+    "story": {"logline": "Pacienti léčení přípravkem Novafen mají výrazně zvýšené jaterní testy (ALT).",
+              "affected_share": 0.25,
+              "overrides": [{"field": "medication", "op": "set", "value": "Novafen"},
+                            {"field": "alt_ukat_l", "op": "multiply", "value": "3.5"}],
+              "writer_hint": "zvýšené ALT u pacienta na Novafenu; lékař doporučí kontrolu jaterních testů"},
+}
+
+_GENERIC_SPEC = {
+    "name": "Obecné dokumenty", "document_type": "dokument", "description": "Obecné syntetické dokumenty",
+    "style": "Věcný styl", "min_words": 60, "max_words": 300, "title_template": "Dokument {id}",
+    "facts": [
+        {"name": "subject", "type": "text", "description": "Předmět", "must_mention": True},
+        {"name": "issued_on", "type": "date", "must_mention": True},
+        {"name": "amount_czk", "type": "float", "min": 100, "max": 50000, "must_mention": True},
+        {"name": "category", "type": "text", "enum_values": ["A", "B", "C"]},
+    ],
+    "sections": [{"title": "Shrnutí", "kind": "text", "instructions": "Krátké shrnutí"},
+                 {"title": "Údaje", "kind": "key_values", "instructions": "Klíčové údaje"}],
+    "story": None,
+}
+
+
+@register_mock("doc_plan")
+def _doc_plan(prompt: str, ctx: dict) -> dict:
+    import copy
+
+    inp = ctx["input"]
+    text = inp["description"].lower()
+    if ctx.get("source"):
+        src = ctx["source"]
+        spec = {"name": f"Dokumenty z tabulky {src['table']}", "document_type": "formální dopis",
+                "description": f"Formální dopisy vytvořené z řádků tabulky {src['table']}",
+                "style": "Zdvořilý formální styl", "min_words": 60, "max_words": 300,
+                "title_template": "Dopis {id}", "facts": src["columns"],
+                "sections": [{"title": "Oslovení a předmět", "kind": "text"}, {"title": "Shrnutí případu", "kind": "key_values"},
+                             {"title": "Další postup", "kind": "list"}], "story": None}
+    elif any(w in text for w in ("pacient", "lékař", "zdrav", "nemoc", "patient", "health")):
+        spec = copy.deepcopy(_MED_SPEC)
+    else:
+        spec = copy.deepcopy(_GENERIC_SPEC)
+    spec.update(count=inp["count"], format=inp["format"], seed=inp["seed"])
+    return {"spec": spec, "questions": ["Mají zprávy obsahovat i rodná čísla? (doporučeno ne – citlivý údaj)"],
+            "suggestions": ["Přidat sekci 'Medikace při propuštění' jako tabulku", "Zvýšit podíl zasažených na 35 %"],
+            "notes": "Mock planner dokumentů."}
+
+
+@register_mock("doc_replan")
+def _doc_replan(prompt: str, ctx: dict) -> dict:
+    spec = ctx["spec"]
+    if ctx.get("feedback"):
+        spec["style"] = (spec.get("style", "") + " | " + ctx["feedback"])[:500]
+    return {"spec": spec, "questions": [], "suggestions": [], "notes": "Mock přeplánování dokumentů."}
+
+
+@register_mock("doc_write")
+def _doc_write(prompt: str, ctx: dict) -> dict:
+    spec, facts, affected = ctx["spec"], ctx["facts"], ctx["affected"]
+
+    def fv(v):
+        if isinstance(v, float):
+            return str(int(v)) if v.is_integer() else f"{v:.2f}".rstrip("0").rstrip(".")
+        return str(v)
+
+    pairs = [[f["description"] or f["name"], fv(facts.get(f["name"]))] for f in spec["facts"] if f["name"] in facts]
+    mention = ", ".join(f"{f['description'] or f['name']}: {fv(facts.get(f['name']))}" for f in spec["facts"]
+                        if f["name"] in facts)
+    filler = ("Dokument byl vyhotoven na základě dostupných podkladů a odpovídá skutečnostem uvedeným níže. "
+              "Všechny údaje byly zkontrolovány odpovědnou osobou. ")
+    sections = []
+    for s in spec["sections"]:
+        sec = {"title": s["title"], "body": "", "items": [], "pairs": [], "rows": []}
+        if s["kind"] == "key_values":
+            sec["pairs"] = pairs
+        elif s["kind"] == "table":
+            sec["rows"] = [["Parametr", "Hodnota"]] + [[p[0], p[1]] for p in pairs if p[1] and p[1][0].isdigit()]
+        elif s["kind"] == "list":
+            sec["items"] = [f"{p[0]}: {p[1]}" for p in pairs[:4]] + (
+                ["Doporučena kontrola zvýšených hodnot."] if affected else ["Bez dalších doporučení."])
+        else:
+            sec["body"] = filler * 3 + f"Shrnutí údajů – {mention}." + (
+                " Byly zjištěny neobvyklé hodnoty vyžadující pozornost." if affected else "")
+        sections.append(sec)
+    title = spec["title_template"]
+    try:
+        title = title.format(id=facts.get("doc_id"), document_type=spec["document_type"], **facts)
+    except (KeyError, IndexError, ValueError):
+        title = f"{spec['document_type'].capitalize()} {facts.get('doc_id')}"
+    return {"title": title, "sections": sections, "email_subject": title,
+            "email_from": "podatelna@example.invalid", "email_to": "adresat@example.invalid"}
+
+
+@register_mock("doc_validate")
+def _doc_validate(prompt: str, ctx: dict) -> dict:
+    s = ctx["summary"]
+    ok = s["checks_ok"] == s["documents"]
+    det = []
+    if ctx.get("story"):
+        det = [{"step_id": "story", "detectable": bool(ctx.get("story_stats")), "confidence": 0.85,
+                "comment": f"Statistiky zasažených vs. ostatních: {json.dumps(ctx.get('story_stats'), ensure_ascii=False)[:300]}"}]
+    return {"verdict": "pass" if ok else "warn",
+            "summary": f"{s['checks_ok']}/{s['documents']} dokumentů prošlo kontrolami; texty odpovídají faktům.",
+            "story_detectability": det,
+            "issues": [] if ok else [{"id": "docs", "severity": "major", "description": f"Chyby: {s['failed']}"}]}
