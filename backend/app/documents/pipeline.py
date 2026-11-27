@@ -48,6 +48,16 @@ def _source_context(inp_or_spec) -> tuple[list[FactField], dict[str, Any]] | Non
     return [FactField.model_validate(f) for f in desc["fields"]], desc
 
 
+def _dedupe_facts(facts: list[FactField]) -> list[FactField]:
+    seen: set[str] = set()
+    out = []
+    for f in facts:
+        if f.name not in seen:
+            seen.add(f.name)
+            out.append(f)
+    return out
+
+
 def _post(resp: DocPlannerResponse, inp: Optional[DocInput]) -> DocPlannerResponse:
     spec = resp.spec
     upd: dict[str, Any] = {}
@@ -59,7 +69,8 @@ def _post(resp: DocPlannerResponse, inp: Optional[DocInput]) -> DocPlannerRespon
     if src:
         fields, _ = src
         flags = {f.name: f.must_mention for f in spec.facts}
-        upd["facts"] = [f.model_copy(update={"must_mention": flags.get(f.name, f.must_mention)}) for f in fields]
+        upd["facts"] = _dedupe_facts([f.model_copy(update={"must_mention": flags.get(f.name, f.must_mention)})
+                                      for f in fields])
         if spec.story:
             # facts of grounded documents are real data – a hidden pattern must not alter them
             upd["story"] = None
@@ -246,7 +257,7 @@ def fill_data_tables(spec: DocSpec, doc: WrittenDocument, facts: dict[str, Any])
     rows = [[_ITEM_LABELS.get(c, c) for c in cols]] + [[money(r.get(c)) if r.get(c) is not None else "" for c in cols]
                                                        for r in items]
     unit = " Kč" if cs else ""
-    pairs = [[lbl, money(float(facts[k])) + unit] for k, lbl in (("total_amount", "Základ (bez DPH)"),
+    pairs = [[lbl, money(float(facts[k])) + unit] for k, lbl in (("net_amount", "Základ (bez DPH)"),
                                                                 ("vat_amount", "DPH 21 %"),
                                                                 ("total_with_vat", "Celkem k úhradě"))
              if facts.get(k) is not None]

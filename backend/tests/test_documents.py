@@ -143,15 +143,15 @@ def test_invoices_from_purchase_orders(retail_dataset):
     src, res = _source_run(retail_dataset)
     fields, facts = build_source_facts(src, "purchase_orders", 5, 1, "supplier_id", "2")
     names = [f.name for f in fields]
-    assert {"supplier_name", "store_name", "items", "total_amount", "vat_amount", "total_with_vat"} <= set(names)
+    assert {"supplier_name", "store_name", "items", "net_amount", "vat_amount", "total_with_vat"} <= set(names)
     assert (facts.supplier_id == 2).all()
     conn = sqlite3.connect(store.db_path(src))
     for _, r in facts.iterrows():
         expected = conn.execute(
             "SELECT ROUND(SUM(l.qty_received * p.unit_cost), 2) FROM purchase_order_lines l "
             "JOIN products p ON p.product_id = l.product_id WHERE l.po_id = ?", (int(r.po_id),)).fetchone()[0]
-        assert abs(r.total_amount - expected) < 0.05  # amounts computed from the data, not by an LLM
-        assert abs(r.total_with_vat - round(r.total_amount * 1.21, 2)) < 0.02
+        assert abs(r.net_amount - expected) < 0.05  # amounts computed from the data, not by an LLM
+        assert abs(r.total_with_vat - round(r.net_amount * 1.21, 2)) < 0.02  # purchase: VAT added on top
         items = _json.loads(r["items"])
         assert len(items) == r.items_count and "product_id" not in items[0] and "product_name" in items[0]
         assert not any(k.endswith("unit_price") for k in items[0])  # purchase invoice shows cost prices only
@@ -170,15 +170,34 @@ def test_invoices_from_purchase_orders(retail_dataset):
     assert sec["pairs"][-1][0] == "Celkem k úhradě" and sec["pairs"][-1][1].endswith("Kč")
 
 
-def test_receipts_hide_internal_cost(retail_dataset):
+def test_receipts_from_transactions(retail_dataset):
+    """Regression: transactions already has items_count/total_amount -> no duplicate fact fields."""
     import json as _json
 
     from app.documents.sources import build_source_facts
 
-    src, _ = _source_run(retail_dataset)
-    fields, facts = build_source_facts(src, "transactions", 3, 1)
+    src, res = _source_run(retail_dataset)
+    fields, facts = build_source_facts(src, "transactions", 4, 1)
+    names = [f.name for f in fields]
+    assert len(names) == len(set(names))
     items = _json.loads(facts["items"].iloc[0])
-    assert not any("cost" in k for k in items[0]) and "line_total" in items[0]
+    assert not any("cost" in k for k in items[0]) and "line_total" in items[0]  # sales docs hide costs
+    tx = res.tables["transactions"].set_index("transaction_id")
+    for _, r in facts.iterrows():
+        assert r.total_amount == tx.loc[r.transaction_id, "total_amount"]  # original column kept, not overwritten
+        assert abs(r.total_with_vat - r.total_amount) < 0.05  # retail prices include VAT
+        assert abs(r.net_amount + r.vat_amount - r.total_with_vat) < 0.02
+
+    pr = run(plan_docs(DocInput(description="Účtenky k nákupům zákazníků", count=4, format="pdf",
+                                source_run_id=src, source_table="transactions")))
+    rid = run(execute_doc_run(DocRunRequest(spec=pr.spec), Job(id="r", kind="docs")))["run_id"]
+    assert store.load_run(rid)["checks_summary"]["passed"] == 4
+
+
+def test_docspec_tolerates_duplicate_fields():
+    spec = DocSpec(name="t", document_type="x", facts=[{"name": "a"}, {"name": "a", "type": "int"}, {"name": "b"}],
+                   sections=[{"title": "S"}])
+    assert [f.name for f in spec.facts] == ["a", "b"] and spec.facts[0].type == "text"
 
 
 def test_doc_sources_endpoint(retail_dataset):

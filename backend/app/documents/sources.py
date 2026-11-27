@@ -79,7 +79,9 @@ def inspect_source(run_id: str, table: str) -> SourceInfo:
     child_parents: list = []
     if pk:
         # only composition tables (order lines, receipt items…) become line items – not every referencing table
+        singular = re.sub(r"ies$", "y", t.name) if t.name.endswith("ies") else re.sub(r"s$", "", t.name)
         cands = [(ct, c) for ct in spec.tables for c in ct.columns if c.fk == f"{t.name}.{pk}" and ct.name != t.name
+                 and ct.name.startswith(singular)
                  and re.search(r"lines?$|items?$|details?$|positions?$|polozk", ct.name)]
         if cands:
             child = cands[0]
@@ -108,28 +110,38 @@ def _qty_key(item: dict) -> Optional[str]:
     return next((k for k in item if "qty" in k or "quantity" in k), None)
 
 
+def is_purchase(info: SourceInfo) -> bool:
+    """Purchase documents (we buy from a supplier) show cost prices and add VAT on top; sales documents use
+    VAT-inclusive retail prices."""
+    return any(fk.fk.startswith("suppliers.") for fk, _, _ in info.parents) or "purchase" in info.table.name
+
+
 def source_fields(info: SourceInfo) -> list[FactField]:
     t = info.table
-    fields = [FactField(name=c.name, type=c.type, description=c.description, enum_values=c.enum_values,
-                        min=c.min, max=c.max, must_mention=c.pk or c.type in ("date", "datetime"))
-              for c in t.columns]
+    fields: list[FactField] = []
+    seen: set[str] = set()
+
+    def add(f: FactField) -> None:
+        if f.name not in seen:  # never duplicate an existing column (e.g. transactions.total_amount)
+            seen.add(f.name)
+            fields.append(f)
+
+    for c in t.columns:
+        add(FactField(name=c.name, type=c.type, description=c.description, enum_values=c.enum_values,
+                      min=c.min, max=c.max, must_mention=c.pk or c.type in ("date", "datetime")))
     for fk, rt, cols in info.parents:
         for c in cols:
-            fields.append(FactField(name=f"{_prefix(fk.name)}_{c.name}", type=c.type,
-                                    description=f"{_label(fk.name)} – {c.description or c.name}",
-                                    must_mention=c.name in ("name", "title")))
+            add(FactField(name=f"{_prefix(fk.name)}_{c.name}", type=c.type,
+                          description=f"{_label(fk.name)} – {c.description or c.name}",
+                          must_mention=c.name in ("name", "title")))
     if info.child:
-        fields += [
-            FactField(name=ITEMS_FIELD, type="text", description=f"Položky z tabulky {info.child[0].name} (JSON) – "
-                      "vykreslí se deterministicky v sekci typu data_table"),
-            FactField(name="items_count", type="int", description="Počet položek", must_mention=False),
-        ]
+        add(FactField(name=ITEMS_FIELD, type="text", description=f"Položky z tabulky {info.child[0].name} (JSON) – "
+                      "vykreslí se deterministicky v sekci typu data_table"))
+        add(FactField(name="items_count", type="int", description="Počet položek"))
         if _has_amounts(info):
-            fields += [
-                FactField(name="total_amount", type="float", description="Součet položek bez DPH (Kč)", must_mention=True),
-                FactField(name="vat_amount", type="float", description=f"DPH {int(VAT_RATE * 100)} % (Kč)", must_mention=True),
-                FactField(name="total_with_vat", type="float", description="Celkem k úhradě vč. DPH (Kč)", must_mention=True),
-            ]
+            add(FactField(name="net_amount", type="float", description="Základ daně – bez DPH (Kč)", must_mention=True))
+            add(FactField(name="vat_amount", type="float", description=f"DPH {int(VAT_RATE * 100)} % (Kč)", must_mention=True))
+            add(FactField(name="total_with_vat", type="float", description="Celkem vč. DPH (Kč)", must_mention=True))
     return fields
 
 
@@ -179,6 +191,7 @@ def build_source_facts(run_id: str, table: str, count: int, seed: int, filter_co
                 f"SELECT {_q(rc)}, {', '.join(_q(c.name) for c in cols)} FROM {_q(rt.name)} "
                 f"WHERE {_q(rc)} IN ({','.join('?' * len(vals))})", conn, params=vals)
             ref = ref.rename(columns={c.name: f"{_prefix(fk.name)}_{c.name}" for c in cols}).rename(columns={rc: fk.name})
+            ref = ref[[fk.name] + [c for c in ref.columns if c != fk.name and c not in base.columns]]
             base = base.merge(ref, on=fk.name, how="left")
         # child items
         if info.child:
@@ -193,8 +206,9 @@ def build_source_facts(run_id: str, table: str, count: int, seed: int, filter_co
                     f"SELECT {_q(rc)}, {', '.join(_q(c.name) for c in cols)} FROM {_q(rt.name)} "
                     f"WHERE {_q(rc)} IN ({','.join('?' * len(vals))})", conn, params=vals)
                 ref = ref.rename(columns={c.name: f"{_prefix(fk.name)}_{c.name}" for c in cols}).rename(columns={rc: fk.name})
+                ref = ref[[fk.name] + [c for c in ref.columns if c != fk.name and c not in items.columns]]
                 items = items.merge(ref, on=fk.name, how="left")
-            purchase = any(fk.fk.startswith("suppliers.") for fk, _, _ in info.parents) or "purchase" in t.name
+            purchase = is_purchase(info)
             # drop technical ids; purchase docs show cost prices, sales docs never reveal internal costs
             drop = [c.name for c in ct.columns if c.pk] + [fkc.name] + [fk.name for fk, _, _ in info.child_parents]
             has_cost = [c for c in items.columns if c.endswith("unit_cost")]
@@ -226,11 +240,18 @@ def build_source_facts(run_id: str, table: str, count: int, seed: int, filter_co
                 counts.append(len(rows))
                 totals.append(round(total, 2))
             base[ITEMS_FIELD] = item_json
-            base["items_count"] = counts
+            if "items_count" not in base.columns:
+                base["items_count"] = counts
             if _has_amounts(info):
-                base["total_amount"] = totals
-                base["vat_amount"] = [round(x * VAT_RATE, 2) for x in totals]
-                base["total_with_vat"] = [round(x * (1 + VAT_RATE), 2) for x in totals]
+                if purchase:  # cost prices are net -> VAT on top
+                    net = totals
+                    gross = [round(x * (1 + VAT_RATE), 2) for x in net]
+                else:  # retail prices include VAT -> extract it
+                    gross = totals
+                    net = [round(x / (1 + VAT_RATE), 2) for x in gross]
+                base["net_amount"] = [round(x, 2) for x in net]
+                base["vat_amount"] = [round(g - n, 2) for g, n in zip(gross, net)]
+                base["total_with_vat"] = [round(x, 2) for x in gross]
     finally:
         conn.close()
     fields = [f for f in source_fields(info) if f.name in base.columns]

@@ -88,9 +88,13 @@ class DocSpec(BaseModel):
 
     @model_validator(mode="after")
     def _check(self) -> "DocSpec":
+        # tolerate duplicates (e.g. from the planner): keep the first definition of each field
+        uniq: dict[str, FactField] = {}
+        for f in self.facts:
+            uniq.setdefault(f.name, f)
+        if len(uniq) != len(self.facts):
+            self.facts = list(uniq.values())
         names = [f.name for f in self.facts]
-        if len(names) != len(set(names)):
-            raise ValueError("duplicate fact fields")
         if not self.facts:
             raise ValueError("at least one fact field is required")
         if not self.sections:
