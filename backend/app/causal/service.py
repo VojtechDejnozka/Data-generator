@@ -35,6 +35,7 @@ from ..contracts.io import Issue, RunRequest, ValidationVerdict
 from ..llm.client import LLMError, UsageTracker, usage_scope
 from ..contracts.spec import Dashboard, ScenarioSpec, Widget
 from ..storage import runs as store
+from ..storage.text_files import read_saved_text
 from .contracts import CorruptionConfig, DetectiveConfig, DifficultyConfig, EvaluationConfig, SCMSpec
 from .corruption import observe, table_infos
 from .detective import analyze
@@ -61,7 +62,7 @@ class CausalError(ValueError):
 def list_reference_scenarios() -> list[dict[str, Any]]:
     out = []
     for p in sorted(SCENARIO_DIR.glob("*.json")):
-        d = json.loads(p.read_text())
+        d = json.loads(p.read_text(encoding="utf-8"))
         out.append({"id": p.stem, "name": d["meta"]["name"], "domain": d["meta"].get("domain"),
                     "description": d["meta"].get("description")})
     return out
@@ -71,7 +72,7 @@ def load_reference_scenario(sid: str) -> SCMSpec:
     p = SCENARIO_DIR / f"{sid}.json"
     if not sid.replace("_", "").isalnum() or not p.exists():
         raise CausalError(f"unknown reference scenario {sid}")
-    return SCMSpec.model_validate_json(p.read_text())
+    return SCMSpec.model_validate_json(p.read_text(encoding="utf-8"))
 
 
 def scenario_spec(scm: SCMSpec, base: Optional[ScenarioSpec] = None) -> ScenarioSpec:
@@ -127,15 +128,15 @@ def persist_world(run_id: str, gw: GeneratedWorld, spec: ScenarioSpec, subdir: s
         store.save_json(run_id, "manifest.json", gw.manifest)
     else:
         (base / subdir).mkdir(parents=True, exist_ok=True)
-        (base / subdir / "manifest.json").write_text(json.dumps(gw.manifest, ensure_ascii=False, default=str))
+        (base / subdir / "manifest.json").write_text(json.dumps(gw.manifest, ensure_ascii=False, default=str), encoding="utf-8")
     _write_internal(base / subdir / "internal.sqlite", w)
     meta = {"world_hash": w.world_hash, "spec_hash": w.spec_hash, "seed": w.seed, "noise_scale": w.noise_scale,
             "timings": w.timings, "row_counts": {k: int(len(v)) for k, v in w.tables.items()},
             "status": gw.world_report.status, "created_at": dt.datetime.now().isoformat(timespec="seconds")}
     (base / subdir).mkdir(parents=True, exist_ok=True)
-    (base / subdir / "world.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1))
+    (base / subdir / "world.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
     (base / subdir / "validation.json").write_text(json.dumps(
-        {"spec": gw.spec_report.model_dump(), "world": gw.world_report.model_dump()}, ensure_ascii=False, indent=1))
+        {"spec": gw.spec_report.model_dump(), "world": gw.world_report.model_dump()}, ensure_ascii=False, indent=1), encoding="utf-8")
     return meta
 
 
@@ -156,7 +157,7 @@ def run_scm(run_id: str) -> tuple[SCMSpec, dict[str, Any]]:
 def load_world(run_id: str) -> tuple[CleanWorld, dict[str, Any]]:
     """Re-create the immutable clean world from the approved spec + seed and verify its hash."""
     scm, run = run_scm(run_id)
-    meta = json.loads((store.run_path(run_id) / "world" / "world.json").read_text())
+    meta = json.loads(read_saved_text(store.run_path(run_id) / "world" / "world.json"))
     key = f"{run_id}:{meta['world_hash']}"
     if key in _WORLDS:
         _WORLDS.move_to_end(key)
@@ -202,28 +203,28 @@ def observe_and_store(run_id: str, world: CleanWorld, config: CorruptionConfig, 
     obs_id = f"obs-{fp}"
     d = _obs_dir(run_id, obs_id)
     if (d / "info.json").exists():
-        return ObservedDatasetInfo.model_validate_json((d / "info.json").read_text())
+        return ObservedDatasetInfo.model_validate_json(read_saved_text(d / "info.json"))
     o = observe(world, config, allowed_types=allowed, minimum_observability=minimum_observability)
     infos = table_infos(world.spec)
     write_observed_db(d / "observed.sqlite", o.tables, {k: v.types for k, v in infos.items()},
                       {k: v.pk for k, v in infos.items()}, enforce=config.enforce_constraints)
     schema = public_schema(world.spec, o.tables)
-    (d / "schema.json").write_text(schema.model_dump_json(indent=1))
+    (d / "schema.json").write_text(schema.model_dump_json(indent=1), encoding="utf-8")
     priv = store.run_path(run_id) / "private" / "corruption"
     priv.mkdir(parents=True, exist_ok=True)
-    (priv / f"{obs_id}.json").write_text(json.dumps(o.manifest, ensure_ascii=False, default=str))
+    (priv / f"{obs_id}.json").write_text(json.dumps(o.manifest, ensure_ascii=False, default=str), encoding="utf-8")
     info = ObservedDatasetInfo(observation_id=obs_id, run_id=run_id, world_hash=world.world_hash,
                                observed_hash=o.observed_hash, corruption_fingerprint=config.fingerprint(),
                                config=config, baseline=not config.operations, realized=o.realized, checks=o.checks,
                                analyzable=o.analyzable, created_at=dt.datetime.now().isoformat(timespec="seconds"))
-    (d / "info.json").write_text(info.model_dump_json(indent=1))
+    (d / "info.json").write_text(info.model_dump_json(indent=1), encoding="utf-8")
     return info
 
 
 def observation_for_detective(run_id: str, obs_id: str) -> tuple[Path, PublicSchema]:
     """The ONLY two things the detective receives: the observed DB path and the neutral schema."""
     d = _obs_dir(run_id, obs_id)
-    return d / "observed.sqlite", PublicSchema.model_validate_json((d / "schema.json").read_text())
+    return d / "observed.sqlite", PublicSchema.model_validate_json(read_saved_text(d / "schema.json"))
 
 
 def usage_of(tracker: UsageTracker) -> dict[str, Any]:
@@ -278,7 +279,7 @@ def store_evaluation(run_id: str, ev, result: DetectiveResult, tracker: Optional
                           "thoughts_tokens": rec.thoughts_tokens, "cost_usd": rec.cost_usd, "latency_s": rec.latency_s,
                           "attempts": rec.attempts, "error": rec.error, "cache_key": rec.cache_key,
                           "response": tracker.responses.get(rec.cache_key) if rec.ok else None})
-        with open(d / f"{ev.evaluation_id}.llm_calls.jsonl", "w") as f:
+        with open(d / f"{ev.evaluation_id}.llm_calls.jsonl", "w", encoding="utf-8") as f:
             for c in calls:
                 f.write(json.dumps(c, ensure_ascii=False, default=str) + "\n")
     payload = {"evaluation": ev.model_dump(mode="json"), "detective": det,
@@ -289,7 +290,7 @@ def store_evaluation(run_id: str, ev, result: DetectiveResult, tracker: Optional
                           "world_seed": world.seed if world else None,
                           "noise_scale": world.noise_scale if world else None,
                           "llm_calls": len(calls)}}
-    (d / f"{ev.evaluation_id}.json").write_text(json.dumps(payload, ensure_ascii=False, default=str))
+    (d / f"{ev.evaluation_id}.json").write_text(json.dumps(payload, ensure_ascii=False, default=str), encoding="utf-8")
 
 
 async def evaluate_configuration(run_id: str, world: CleanWorld, manifest: dict[str, Any], corruption: CorruptionConfig,
@@ -331,7 +332,7 @@ def _save_difficulty(run_id: str, kind: str, payload: dict[str, Any]) -> str:
     did = f"{kind}-{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}"
     d = store.run_path(run_id) / "difficulty"
     d.mkdir(parents=True, exist_ok=True)
-    (d / f"{did}.json").write_text(json.dumps(payload, ensure_ascii=False, default=str, indent=1))
+    (d / f"{did}.json").write_text(json.dumps(payload, ensure_ascii=False, default=str, indent=1), encoding="utf-8")
     return did
 
 
@@ -480,30 +481,31 @@ def causal_summary(run_id: str) -> dict[str, Any]:
     base = store.run_path(run_id)
     obs = []
     for p in sorted((base / "observations").glob("*/info.json")):
-        i = json.loads(p.read_text())
+        i = json.loads(read_saved_text(p))
         obs.append({k: i.get(k) for k in ("observation_id", "baseline", "observed_hash", "analyzable", "created_at")}
                    | {"realized_share": (i.get("realized") or {}).get("realized_share")})
     evals = []
     for p in sorted((base / "evaluations").glob("*.json")):
-        doc = json.loads(p.read_text())
+        doc = json.loads(read_saved_text(p))
         e = doc["evaluation"]
         evals.append({**{k: e.get(k) for k in ("evaluation_id", "observation_id", "status", "recovery_score", "difficulty")},
                       "detective": (doc.get("detective") or {}).get("agent", {}).get("kind"),
                       "usage": {k: (doc.get("usage") or {}).get(k) for k in ("calls", "tokens", "cost_usd")}})
     diffs = []
     for p in sorted((base / "difficulty").glob("*.json")):
-        d = json.loads(p.read_text())
+        d = json.loads(read_saved_text(p))
         diffs.append({"difficulty_id": p.stem, "mode": d.get("mode"), "status": d.get("status"),
                       "target": d.get("target_difficulty"), "achieved": d.get("achieved_difficulty")
                       if d.get("mode") == "automatic" else (d.get("observed") or {}).get("mean_difficulty")})
-    validation = json.loads((base / "world" / "validation.json").read_text()) if (base / "world" / "validation.json").exists() else {}
+    validation_path = base / "world" / "validation.json"
+    validation = json.loads(read_saved_text(validation_path)) if validation_path.exists() else {}
     from .contracts import derive_edges
     from .mechanisms import describe
     return {"run_id": run_id, "causal": run.get("causal"), "scm": scm.model_dump(mode="json"),
             "edges": [e.model_dump() for e in derive_edges(scm)],
             "mechanisms": {v.variable_id: describe(v) for v in scm.variables},
             "validation": validation, "observations": obs, "evaluations": evals, "difficulty_runs": diffs,
-            "llm_usage_total": sum_usage([json.loads(p.read_text()).get("usage") or {}
+            "llm_usage_total": sum_usage([json.loads(read_saved_text(p)).get("usage") or {}
                                           for p in sorted((base / "evaluations").glob("*.json"))])}
 
 
@@ -581,7 +583,7 @@ def _world_for(run_id: str, info: dict[str, Any]) -> tuple[CleanWorld, dict[str,
     w = generate_world(scm, seed=info.get("world_seed"), noise_scale=info.get("noise_scale") or None)
     if w.world_hash != info["world_hash"]:
         raise CausalError("the world of this evaluation could not be reproduced")
-    m = json.loads((store.run_path(run_id) / "worlds" / w.world_hash / "manifest.json").read_text())
+    m = json.loads(read_saved_text(store.run_path(run_id) / "worlds" / w.world_hash / "manifest.json"))
     return w, m
 
 
@@ -594,7 +596,7 @@ async def replay_evaluation(run_id: str, eval_id: str) -> dict[str, Any]:
     p = d / f"{eval_id}.json"
     if not p.exists():
         raise CausalError("evaluation not found")
-    doc = json.loads(p.read_text())
+    doc = json.loads(read_saved_text(p))
     info = doc.get("replay") or {}
     if not info.get("detective_config"):
         raise CausalError("this evaluation was stored without replay information")
@@ -602,7 +604,7 @@ async def replay_evaluation(run_id: str, eval_id: str) -> dict[str, Any]:
     calls = []
     lp = d / f"{eval_id}.llm_calls.jsonl"
     if lp.exists():
-        calls = [json.loads(x) for x in lp.read_text().splitlines() if x.strip()]
+        calls = [json.loads(x) for x in read_saved_text(lp).splitlines() if x.strip()]
     db, schema = observation_for_detective(run_id, info["observation_id"])
     replay_llm = ReplayLLM(calls)
     if cfg.kind == "llm" and doc["detective"].get("agent", {}).get("mock"):

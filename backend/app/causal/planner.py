@@ -22,6 +22,7 @@ from ..contracts.io import PlannerResponse, Question, ScenarioInput
 from ..llm.client import LLMError, get_llm
 from . import mechanisms as M
 from .contracts import CausalEdge, DifficultyConfig, SCMSpec
+from .engine import relation
 from .service import load_reference_scenario, scenario_spec
 from .validation import validate_spec
 
@@ -38,7 +39,9 @@ Contract essentials:
 - variables: variable_id (stable snake_case), entity (grain), column (null = not materialised), data_type
   float|int|bool|category|text, categories, parents [{variable, alias, lag, aggregation}], mechanism {type, params},
   observability observed|latent, constraints {min,max,clip,round}, initial_state for lagged reads.
-  A parent on a coarser grain is looked up through FKs; on a finer grain it needs aggregation (sum|mean|count|...).
+  A parent on a coarser grain is looked up through FKs; omit aggregation or set it to null for that parent.
+  A parent on a finer grain needs aggregation (sum|mean|count|...). For example, look up a product flag on
+  each product-day row without aggregation; use mean to roll up product-day values to the product grain.
   Feedback only through lags (X_t -> Y_t -> X_t+1); no cycles within a time step.
 - mechanisms (target-node definitions; never repeat a coefficient on an edge): {MECHS}
   Expressions are a restricted language: + - * / ** min max clip log exp sqrt sigmoid where safe_div, comparisons,
@@ -119,10 +122,34 @@ class SCMDraft(BaseModel):
     @model_validator(mode="after")
     def _valid(self) -> "SCMDraft":
         rep = validate_spec(self.scm)
+        targets = {c.target for c in rep.errors if c.check_id == "variable.aggregation"}
+        if targets and self._repair_lookup_aggregations(targets):
+            rep = validate_spec(self.scm)
         if rep.status == "FAIL":
             raise ValueError("SCM is not executable – fix these problems: "
                              + "; ".join(f"{c.target}: {c.explanation}" for c in rep.errors[:12]))
         return self
+
+    def _repair_lookup_aggregations(self, targets: set[str]) -> bool:
+        variables = []
+        notes = []
+        for var in self.scm.variables:
+            if f"variable:{var.variable_id}" not in targets:
+                variables.append(var)
+                continue
+            parents = []
+            for parent in var.parents:
+                source = self.scm.variable(parent.variable)
+                if parent.aggregation and source and relation(self.scm, source.entity, var.entity) == "broadcast":
+                    parent = parent.model_copy(update={"aggregation": None})
+                    notes.append(f"proměnná {var.variable_id}: rodič {source.variable_id} se načítá přes cizí klíč "
+                                 "– odebrána agregace")
+                parents.append(parent)
+            variables.append(var.model_copy(update={"parents": parents}))
+        if notes:
+            self.scm = self.scm.model_copy(update={"variables": variables})
+            self.auto_repairs = [*self.auto_repairs, *notes]
+        return bool(notes)
 
     def to_spec(self) -> SCMSpec:
         return SCMSpec.model_validate(self.scm.model_dump(mode="json"))
@@ -180,7 +207,7 @@ async def plan_story(inp: ScenarioInput) -> PlannerResponse:
               + ("\n\n## User data model (hints, not causal claims)\n" + json.dumps(hints, ensure_ascii=False) if hints else "")
               + "\n\n## Example SCMSpec (different domain – do not copy its content)\n"
               + json.dumps(example, ensure_ascii=False)[:14000]
-              + "\n\nReturn SCMDraft: scm_json (complete SCMSpec), questions (only if essential), assumptions, "
+              + "\n\nReturn SCMDraft: scm (complete SCMSpec as an object), questions (only if essential), assumptions, "
                 "suggested_confounders, alternative_interpretations.")
     try:
         draft: SCMDraft = await get_llm().structured(

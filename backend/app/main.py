@@ -23,6 +23,7 @@ from .planner import plan_scenario, replan
 from .presets.retail_demo import PRESETS
 from .reporting.report import build_report, commentary, compare_runs
 from .storage import runs as store
+from .storage.text_files import read_saved_text
 from .storage.sql_guard import SQLGuardError, run_readonly
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -41,7 +42,7 @@ def _sessions_dir():
 
 
 def _save_session(sid: str, data: dict) -> None:
-    (_sessions_dir() / f"{sid}.json").write_text(json.dumps(data, ensure_ascii=False, default=str))
+    (_sessions_dir() / f"{sid}.json").write_text(json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
 
 
 def _load_session(sid: str) -> dict:
@@ -50,7 +51,7 @@ def _load_session(sid: str) -> dict:
     p = _sessions_dir() / f"{sid}.json"
     if not p.exists():
         raise HTTPException(404, "session not found")
-    return json.loads(p.read_text())
+    return json.loads(read_saved_text(p))
 
 
 def _run_or_404(run_id: str) -> dict:
@@ -650,7 +651,7 @@ def run_difficulty_result(run_id: str, did: str) -> dict:
     p = store.run_path(run_id) / "difficulty" / f"{did}.json"
     if not p.exists():
         raise HTTPException(404, "not found")
-    return json.loads(p.read_text())
+    return json.loads(read_saved_text(p))
 
 
 @app.get("/api/runs/{run_id}/observations/{obs_id}")
@@ -663,7 +664,8 @@ def run_observation(run_id: str, obs_id: str) -> dict:
         raise HTTPException(400, str(e))
     if not (d / "info.json").exists():
         raise HTTPException(404, "observation not found")
-    return {"info": json.loads((d / "info.json").read_text()), "schema": json.loads((d / "schema.json").read_text())}
+    return {"info": json.loads(read_saved_text(d / "info.json")),
+            "schema": json.loads(read_saved_text(d / "schema.json"))}
 
 
 @app.get("/api/runs/{run_id}/observations/{obs_id}/db")
@@ -696,7 +698,7 @@ def run_evaluation_llm_calls(run_id: str, eval_id: str) -> list[dict]:
     if not eval_id.isalnum():
         raise HTTPException(400, "invalid id")
     p = store.run_path(run_id) / "evaluations" / f"{eval_id}.llm_calls.jsonl"
-    return [json.loads(x) for x in p.read_text().splitlines() if x.strip()] if p.exists() else []
+    return [json.loads(x) for x in read_saved_text(p).splitlines() if x.strip()] if p.exists() else []
 
 
 @app.get("/api/runs/{run_id}/evaluations/{eval_id}")
@@ -707,4 +709,4 @@ def run_evaluation(run_id: str, eval_id: str) -> dict:
     p = store.run_path(run_id) / "evaluations" / f"{eval_id}.json"
     if not p.exists():
         raise HTTPException(404, "evaluation not found")
-    return json.loads(p.read_text())
+    return json.loads(read_saved_text(p))
