@@ -174,9 +174,11 @@ async def plan_scenario(inp: ScenarioInput) -> PlannerResponse:
         try:
             a = await get_llm().structured(role="strong", task="plan_archetype", prompt=prompt, schema=ArchetypePlan,
                                            system=ARCHETYPE_SYSTEM, mock_context={"input": inp.model_dump()})
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001 – keep the demo usable when the API is down / out of quota
             log.warning("archetype planning failed: %s", e)
-            raise
+            resp = PlannerResponse(spec=tmpl_spec, notes=f"STRONG model nedostupný ({str(e)[:200]}) – použita "
+                                                         "šablona modulu bez úprav; specifikaci lze upravit ručně.")
+            return _post_process(resp, inp)
         if a.use_archetype:
             spec, notes = merge_archetype(tmpl_spec, a)
             resp = PlannerResponse(spec=spec, questions=a.questions, suggestions=a.suggestions,

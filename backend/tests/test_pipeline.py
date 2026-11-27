@@ -62,3 +62,16 @@ def test_default_plan_covers_all_tables():
     plan = default_plan(pr.spec)
     covered = {t for p in plan.work_packages for t in p.tables}
     assert covered == {t.name for t in pr.spec.tables}
+
+
+def test_planner_falls_back_to_template_when_llm_fails(monkeypatch):
+    from app.llm import client as llm_client
+    from app.llm.client import LLMError
+
+    async def boom(*a, **k):
+        raise LLMError("quota")
+
+    monkeypatch.setattr(llm_client.get_llm(), "structured", boom)
+    pr = run(plan_scenario(SMALL))
+    assert pr.spec.meta.archetype == "retail_supplier_delay" and "nedostupný" in pr.notes
+    assert pr.spec.table("stores").row_count == 4
