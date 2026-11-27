@@ -148,6 +148,9 @@ def _score(ev: dict[str, Any]) -> tuple[int, int]:
 
 
 async def execute_run(req: RunRequest, job: Job, base_params: dict[str, Any] | None = None) -> dict[str, Any]:
+    if req.spec.scm is not None:  # executable structural causal model -> generic causal engine
+        from .causal.service import execute_causal_run
+        return await execute_causal_run(req, job)
     settings = get_settings()
     spec = req.spec
     module = get_module(spec.meta.archetype)

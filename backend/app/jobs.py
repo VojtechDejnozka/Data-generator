@@ -23,6 +23,15 @@ class Job:
     result: Any = None
     error: Optional[str] = None
     created: float = field(default_factory=time.time)
+    cancel_requested: bool = False
+
+    def cancel(self) -> None:
+        """Cooperative cancellation: long-running work polls ``cancelled``."""
+        self.cancel_requested = True
+
+    @property
+    def cancelled(self) -> bool:
+        return self.cancel_requested
 
     def emit(self, phase: str, message: str, progress: float | None = None, **extra: Any) -> None:
         self.phase = phase or self.phase
@@ -34,6 +43,7 @@ class Job:
     def snapshot(self) -> dict[str, Any]:
         return {"id": self.id, "kind": self.kind, "status": self.status, "phase": self.phase,
                 "progress": self.progress, "error": self.error, "result": self.result,
+                "cancel_requested": self.cancel_requested,
                 "events": self.events[-200:]}
 
 

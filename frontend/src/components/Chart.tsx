@@ -4,7 +4,8 @@ import * as echarts from 'echarts'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { fmt, type Json } from '../api'
 
-export const SERIES = ['#257de0', '#f47230', '#00b894', '#f2a600', '#ee7fac', '#008a17', '#6a4ce2', '#ec4647']
+import { SERIES } from './palette'
+export { SERIES }
 const TEXT2 = '#666666'
 const GRID = '#e8e8e8'
 export const B_SUFFIX = ' · B'

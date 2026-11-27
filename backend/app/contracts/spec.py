@@ -11,6 +11,9 @@ import re
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic.json_schema import SkipJsonSchema
+
+from ..causal.contracts import SCMSpec
 
 IDENT = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 
@@ -216,6 +219,9 @@ class ScenarioSpec(BaseModel):
     invariants: list[Invariant] = Field(default_factory=list)
     evidence: list[EvidenceQuery] = Field(default_factory=list)
     dashboard: Dashboard = Field(default_factory=Dashboard)
+    # Optional executable structural causal model (app.causal). When present it is the single source
+    # of truth for generation; `tables` are derived from it. Hidden from LLM structured-output schemas.
+    scm: SkipJsonSchema[Optional[SCMSpec]] = None
 
     @model_validator(mode="after")
     def _consistency(self) -> "ScenarioSpec":

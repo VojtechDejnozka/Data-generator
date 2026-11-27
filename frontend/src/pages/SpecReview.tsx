@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api, type Column, type Json, type PlannerResponse, type Spec, type Suggestion, type Table } from '../api'
 import JobProgress from '../components/JobProgress'
+import ScmPanel from '../components/ScmPanel'
 
 const STRATEGY: Record<string, [string, string]> = {
   simulation: ['simulace', 'bg-violet-50 text-violet-800 border-violet-200'],
@@ -48,7 +49,9 @@ function TableCard({ t, onChange, onRemove }: { t: Table; onChange: (t: Table) =
       {open && (
         <div className="px-3 pb-3 space-y-2">
           <input className="input text-xs" value={t.description} onChange={(e) => onChange({ ...t, description: e.target.value })} />
-          {locked && <div className="text-xs text-violet-700">🔒 Schéma tabulky vlastní deterministický simulátor – sloupce nelze měnit (popis ano).</div>}
+          {locked && <div className="text-xs text-violet-700">{t.flags.includes('scm')
+            ? '🔒 Schéma je odvozené z kauzálního modelu (SCM) – mění se úpravou modelu, ne tabulky.'
+            : '🔒 Schéma tabulky vlastní deterministický simulátor – sloupce nelze měnit (popis ano).'}</div>}
           <table className="data">
             <thead><tr><th>Sloupec</th><th>Typ</th><th>PK</th><th>FK</th><th>Popis / omezení</th>{!locked && <th></th>}</tr></thead>
             <tbody>
@@ -148,7 +151,9 @@ export default function SpecReview() {
           <div className="flex items-center gap-3 mb-3">
             <h1 className="text-xl font-bold flex-1">2 · Review specifikace</h1>
             <span className="chip bg-slate-100">kolo {session.round}</span>
-            {spec.meta.archetype
+            {spec.scm
+              ? <span className="chip border bg-indigo-50 border-indigo-200 text-indigo-800" title="Data vzniknou z rovnic strukturálního kauzálního modelu">kauzální engine (SCM)</span>
+              : spec.meta.archetype
               ? <span className="chip border bg-violet-50 border-violet-200 text-violet-800" title="Kauzální simulátor">modul: {spec.meta.archetype}</span>
               : <span className="chip border bg-teal-50 border-teal-200 text-teal-800">obecná cesta llm_rows</span>}
           </div>
@@ -165,7 +170,10 @@ export default function SpecReview() {
                 <button className="text-blue-700 underline cursor-pointer" onClick={() => setSpec({ ...spec, meta: { ...spec.meta, period_start: '2025-01-01', period_end: '2025-12-31' } })}>Přidat období</button>
               </div>
             )}
-            <div><label className="label">Seed</label><input type="number" className="input" value={spec.meta.seed} onChange={(e) => setSpec({ ...spec, meta: { ...spec.meta, seed: Number(e.target.value) } })} /></div>
+            <div><label className="label">Seed</label><input type="number" className="input" value={spec.meta.seed} onChange={(e) => {
+              const seed = Number(e.target.value)
+              setSpec({ ...spec, meta: { ...spec.meta, seed }, ...(spec.scm ? { scm: { ...spec.scm, meta: { ...spec.scm.meta, seed } } } : {}) })
+            }} /></div>
             <div><label className="label">Jazyk dat</label><input className="input" value={spec.meta.data_language} onChange={(e) => setSpec({ ...spec, meta: { ...spec.meta, data_language: e.target.value } })} /></div>
           </div>
           <div className="grid md:grid-cols-2 gap-3 mt-3">
@@ -174,6 +182,11 @@ export default function SpecReview() {
           </div>
           {resp.notes && <pre className="mt-3 text-xs bg-slate-50 border border-slate-200 rounded p-2 whitespace-pre-wrap">{resp.notes}</pre>}
         </div>
+
+        {spec.scm && <ScmPanel scm={spec.scm} onChange={(scm, d) => setSpec((prev) => prev && ({
+          ...prev, scm, tables: d.tables, story: d.story, evidence: d.evidence, dashboard: d.dashboard,
+          meta: { ...prev.meta, period_start: d.meta.period_start, period_end: d.meta.period_end, seed: scm.meta.seed },
+        }))} />}
 
         <div className="card p-5 space-y-3">
           <h2 className="font-semibold">Příběh a kauzální řetězec</h2>
@@ -213,8 +226,8 @@ export default function SpecReview() {
         </div>
 
         <div className="card p-5 space-y-2">
-          <div className="flex items-center"><h2 className="font-semibold flex-1">Tabulky ({spec.tables.length})</h2>
-            <button className="btn text-xs" onClick={() => setSpec({ ...spec, tables: [...spec.tables, { name: 'new_table', description: '', strategy: 'llm_rows', row_count: 30, flags: [], columns: [{ ...newColumn(), name: 'id', type: 'int', pk: true, nullable: false }] }] })}>+ tabulka (llm_rows)</button>
+          <div className="flex items-center"><h2 className="font-semibold flex-1">Tabulky ({spec.tables.length}){spec.scm && <span className="text-xs font-normal text-slate-500 ml-2">odvozené z SCM</span>}</h2>
+            {!spec.scm && <button className="btn text-xs" onClick={() => setSpec({ ...spec, tables: [...spec.tables, { name: 'new_table', description: '', strategy: 'llm_rows', row_count: 30, flags: [], columns: [{ ...newColumn(), name: 'id', type: 'int', pk: true, nullable: false }] }] })}>+ tabulka (llm_rows)</button>}
           </div>
           {spec.tables.map((t, i) => <TableCard key={i} t={t} onChange={(nt) => updTable(i, nt)} onRemove={() => setSpec({ ...spec, tables: spec.tables.filter((_, j) => j !== i) })} />)}
           <details className="text-xs pt-2"><summary className="cursor-pointer font-medium text-slate-700">Vazby (FK) – {edges.length}</summary>
@@ -222,7 +235,7 @@ export default function SpecReview() {
           </details>
         </div>
 
-        <div className="card p-5">
+        {spec.knobs.length > 0 && <div className="card p-5">
           <h2 className="font-semibold mb-2">Knoby (parametry pro what-if)</h2>
           <div className="grid md:grid-cols-2 gap-3">
             {spec.knobs.map((k, i) => (
@@ -245,7 +258,7 @@ export default function SpecReview() {
               </div>
             ))}
           </div>
-        </div>
+        </div>}
 
         <div className="card p-5 space-y-2">
           <details><summary className="font-semibold cursor-pointer">Invarianty ({spec.invariants.length}) – deterministicky kontrolovaná pravidla</summary>

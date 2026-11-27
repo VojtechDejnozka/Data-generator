@@ -12,11 +12,18 @@ const SIZES: [string, string, string][] = [
   ['large', 'Velký', 'tisíce řádků; u simulací až ~1 mil. transakcí'],
 ]
 
+const ENGINES: ['module' | 'scm', string, string][] = [
+  ['module', 'Scénářový modul / obecná cesta', 'Hotový simulátor archetypu, nebo tabulky generované LLM po dávkách (původní cesta).'],
+  ['scm', 'Kauzální engine (SCM)', 'Gemini navrhne spustitelný strukturální kauzální model – entity, rovnice, distribuce, události; '
+    + 'data vzniknou programově z rovnic a projdou mechanistickou i statistickou validací.'],
+]
+
 export default function NewScenario() {
   const [story, setStory] = useState('')
   const [volume, setVolume] = useState('medium')
   const [seed, setSeed] = useState(42)
   const [preset, setPreset] = useState<string | null>(null)
+  const [engine, setEngine] = useState<'module' | 'scm'>('module')
   const [presets, setPresets] = useState<Json[]>([])
   const [job, setJob] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -26,13 +33,13 @@ export default function NewScenario() {
   const submit = async () => {
     setErr(null)
     if (story.trim().length < 10) { setErr('Popište příběh (alespoň pár vět).'); return }
-    try { setJob((await api.plan({ story, volume, seed, preset })).job_id) } catch (e) { setErr(String(e)) }
+    try { setJob((await api.plan({ story, volume, seed, preset: engine === 'scm' ? null : preset, engine })).job_id) } catch (e) { setErr(String(e)) }
   }
 
   if (job) {
     return (
       <div className="max-w-3xl mx-auto space-y-4">
-        <JobProgress jobId={job} title="STRONG model navrhuje scénář" phases={[['plan', 'Návrh ScenarioSpec'], ['done', 'Hotovo']]}
+        <JobProgress jobId={job} title={engine === 'scm' ? 'STRONG model navrhuje kauzální model (SCM)' : 'STRONG model navrhuje scénář'} phases={[['plan', 'Návrh ScenarioSpec'], ['done', 'Hotovo']]}
           onDone={(r) => nav(`/plan/${r.session_id}`)} />
         <button className="btn" onClick={() => setJob(null)}>Zpět k zadání</button>
       </div>
@@ -46,7 +53,7 @@ export default function NewScenario() {
         <div className="flex gap-2">
           {presets.map((p) => (
             <button key={p.id} className="btn" title={p.description}
-              onClick={() => { setStory(p.input.story); setVolume(p.input.volume); setSeed(p.input.seed); setPreset(p.id) }}>
+              onClick={() => { setStory(p.input.story); setVolume(p.input.volume); setSeed(p.input.seed); setPreset(p.id); setEngine('module') }}>
               ⚡ Preset: {p.title}
             </button>
           ))}
@@ -83,8 +90,21 @@ export default function NewScenario() {
         </div>
       </div>
 
+      <div>
+        <label className="label">Generátor dat</label>
+        <div className="grid md:grid-cols-2 gap-2">
+          {ENGINES.map(([id, label, desc]) => (
+            <button key={id} onClick={() => setEngine(id)}
+              className={`text-left border rounded-lg p-3 cursor-pointer ${engine === id ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:bg-slate-50'}`}>
+              <div className="font-medium text-sm">{label}</div>
+              <div className="text-xs text-slate-500">{desc}</div>
+            </button>
+          ))}
+        </div>
+      </div>
+
       {err && <div className="text-sm text-red-700">{err}</div>}
-      <button className="btn btn-primary text-base px-5 py-2" onClick={submit}>Navrhnout scénář (Gemini) →</button>
+      <button className="btn btn-primary text-base px-5 py-2" onClick={submit}>{engine === 'scm' ? 'Navrhnout kauzální model (Gemini) →' : 'Navrhnout scénář (Gemini) →'}</button>
     </div>
   )
 }

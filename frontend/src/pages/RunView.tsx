@@ -41,6 +41,8 @@ export default function RunView() {
           <h1 className="text-xl font-bold truncate">{run.name} <span className="text-slate-500 font-normal text-base">– {run.label}</span></h1>
         </div>
         <VerdictChip v={run.verdict?.verdict} />
+        {run.engine === 'scm' && <span className="chip bg-indigo-50 text-indigo-800 border border-indigo-200"
+          title={`hash čistého světa ${run.causal?.world_hash ?? ''}`}>SCM engine · validace {run.causal?.status}</span>}
         {run.mock && <span className="chip bg-amber-50 text-amber-800 border border-amber-200">mock LLM</span>}
         {run.parent_run_id && <Link className="btn" to={`/compare?a=${run.parent_run_id}&b=${run.run_id}`}>Porovnat s rodičem</Link>}
         <a className="btn" href={`/api/runs/${run.run_id}/export.zip`}>⬇ CSV (ZIP)</a>

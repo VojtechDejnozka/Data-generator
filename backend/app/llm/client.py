@@ -181,10 +181,17 @@ class LLMClient:
         mock_context: dict[str, Any] | None = None,
         temperature: float | None = None,
         use_cache: bool = True,
+        json_mode: bool = False,
+        max_validation_retries: int | None = None,
     ) -> T:
-        """Call the model for `role` and return a validated instance of `schema`."""
+        """Call the model for `role` and return a validated instance of `schema`.
+
+        ``json_mode=True`` skips Gemini's response schema and puts the JSON schema into the prompt instead –
+        for contracts with free-form parameter objects that structured output cannot express.
+        ``max_validation_retries`` overrides the default number of repair rounds with the error message."""
         schema_json = json.dumps(gemini_schema(schema), sort_keys=True)
-        key = _hash(role, task, system or "", prompt, schema_json, str(temperature))
+        key = _hash(role, task, system or "", prompt, schema_json, str(temperature),
+                    "json" if json_mode else "")
         tracker = current_tracker()
 
         if self.mock:
@@ -212,7 +219,8 @@ class LLMClient:
                 pass  # stale cache entry (schema changed) -> regenerate
 
         async with self._sem():
-            obj, raw, rec = await self._call_with_retries(role, task, prompt, schema, system, temperature, key)
+            obj, raw, rec = await self._call_with_retries(role, task, prompt, schema, system, temperature, key,
+                                                          json_mode, max_validation_retries)
         if tracker:
             tracker.add(rec, raw)
         if self.settings.llm_cache:
@@ -221,7 +229,8 @@ class LLMClient:
         return obj
 
     # -- internals ---------------------------------------------------------------
-    async def _call_with_retries(self, role, task, prompt, schema, system, temperature, key):
+    async def _call_with_retries(self, role, task, prompt, schema, system, temperature, key, json_mode=False,
+                                 max_validation_retries=None):
         from google.genai import errors, types
 
         schema_dict = gemini_schema(schema)
@@ -229,8 +238,9 @@ class LLMClient:
         total = CallRecord(role=role, task=task, model="", cache_key=key, attempts=0)
         t0 = time.time()
 
+        retries = MAX_VALIDATION_RETRIES if max_validation_retries is None else max_validation_retries
         for model in self.models_for(role):
-            use_schema = True
+            use_schema = not json_mode
             feedback: list[str] = []
             transport_attempt = 0
             validation_attempt = 0
@@ -296,7 +306,7 @@ class LLMClient:
                 except (json.JSONDecodeError, ValidationError, ValueError) as e:
                     err = str(e)[:1500]
                     errors_seen.append(f"{model}: invalid output: {err[:200]}")
-                    if validation_attempt < MAX_VALIDATION_RETRIES:
+                    if validation_attempt < retries:
                         validation_attempt += 1
                         feedback.append(err)
                         continue

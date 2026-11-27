@@ -15,7 +15,7 @@ make setup                 # backend venv (uv / Python 3.11+) + npm install, vyt
 make mock                  # offline: fixture odpovědi LLM, bez klíče
 make dev                   # reálné Gemini API
 # UI: http://127.0.0.1:5173   API: http://127.0.0.1:8000/api/health
-make test                  # 39 backend testů (mock) + typecheck frontendu
+make test                  # backend testy (mock, vč. kauzálního jádra) + typecheck frontendu
 make seed-mock             # předgeneruje 3 demo běhy (příběh, baseline, silné zpoždění) – mock
 make seed                  # totéž s reálným Gemini
 ```
@@ -103,6 +103,14 @@ v promptu. Pokud plánovaný příběh odpovídá modulu, STRONG vrací jen komp
   ceny na běh, uložení všech LLM odpovědí do `runs/<id>/llm_calls.jsonl` → běh lze přehrát.
 - Reprodukovatelnost: nezávislé RNG proudy na komponentu (`[seed, stream]`), takže změna knobu
   neposune náhodnost jiných částí. What-if běhy mají **identickou poptávku**.
+
+## Kauzální jádro – spustitelný SCM (`backend/app/causal/`)
+Obecný deklarativní engine strukturálních kauzálních modelů: z příběhu (LLM planner, `engine: "scm"`) nebo
+z deklarativní konfigurace (`backend/app/causal/scenarios/*.json` – retail a školství) vznikne editovatelný SCM
+(entity a granularity, proměnné, mechanismy, distribuce, události), z něj čistá relační realita s ground truth,
+čtyřvrstvá validace, pozorovaná (poškozená) databáze, slepý detektiv a evaluace. Obtížnost 0–100 se buď
+změří pro zadané poškození (manuál), nebo se poškození dohledá automaticky k cílové obtížnosti.
+Kontrakty, API a omezení: [`docs/CAUSAL_CORE.md`](docs/CAUSAL_CORE.md).
 
 ## Generátor dokumentů (záložka *Dokumenty*)
 Stejná pipeline pro nestrukturované výstupy – lékařské zprávy, dopisy, e-maily, posudky, reporty…

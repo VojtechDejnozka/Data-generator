@@ -462,3 +462,9 @@ def _doc_validate(prompt: str, ctx: dict) -> dict:
             "summary": f"{s['checks_ok']}/{s['documents']} dokumentů prošlo kontrolami; texty odpovídají faktům.",
             "story_detectability": det,
             "issues": [] if ok else [{"id": "docs", "severity": "major", "description": f"Chyby: {s['failed']}"}]}
+
+
+@register_mock("plan_scm")
+def _plan_scm(prompt: str, ctx: dict) -> dict:
+    from ..causal.planner import mock_plan_scm
+    return mock_plan_scm(prompt, ctx)

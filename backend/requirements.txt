@@ -9,3 +9,8 @@ sse-starlette>=3.7.1
 pytest>=9.2.0
 httpx>=0.29.0
 fpdf2>=2.9.0
+# causal core (app/causal)
+scipy>=1.14
+networkx>=3.3
+sqlglot>=25.0
+pyyaml>=6.0

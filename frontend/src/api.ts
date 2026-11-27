@@ -90,6 +90,8 @@ export interface Spec {
   invariants: Json[]
   evidence: Evidence[]
   dashboard: { title: string; widgets: Json[] }
+  /** Executable structural causal model (backend app.causal); when present it defines the data. */
+  scm?: Json | null
 }
 
 export interface Suggestion {
@@ -156,6 +158,8 @@ export const api = {
   health: () => req<Json>('GET', '/api/health'),
   presets: () => req<Json[]>('GET', '/api/presets'),
   plan: (input: Json) => req<{ job_id: string }>('POST', '/api/plan', input),
+  scmValidate: (scm: Json) => req<Json>('POST', '/api/scm/validate', scm),
+  scmEdit: (scm: Json, operations: Json[]) => req<Json>('POST', '/api/scm/edit', { scm, operations }),
   session: (sid: string) => req<Json>('GET', `/api/plan/${sid}`),
   replan: (sid: string, body: Json) => req<{ job_id: string }>('POST', `/api/plan/${sid}/replan`, body),
   validateSpec: (spec: Spec) => req<{ errors: string[] }>('POST', '/api/spec/validate', spec),

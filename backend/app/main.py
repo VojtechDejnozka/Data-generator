@@ -94,6 +94,15 @@ def job_status(job_id: str) -> dict:
     return job.snapshot()
 
 
+@app.post("/api/jobs/{job_id}/cancel")
+def job_cancel(job_id: str) -> dict:
+    job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "job not found")
+    job.cancel()
+    return {"id": job.id, "cancel_requested": True, "status": job.status}
+
+
 @app.get("/api/jobs/{job_id}/events")
 async def job_events(job_id: str) -> StreamingResponse:
     job = jobs.get(job_id)
@@ -121,8 +130,12 @@ async def job_events(job_id: str) -> StreamingResponse:
 @app.post("/api/plan")
 async def start_plan(inp: ScenarioInput) -> dict:
     async def work(job):
-        job.emit("plan", "STRONG model navrhuje ScenarioSpec", 0.1)
-        resp = await plan_scenario(inp)
+        job.emit("plan", "STRONG model navrhuje ScenarioSpec" + (" se spustitelným SCM" if inp.engine == "scm" else ""), 0.1)
+        if inp.engine == "scm":
+            from .causal.planner import plan_story
+            resp = await plan_story(inp)
+        else:
+            resp = await plan_scenario(inp)
         sid = secrets.token_hex(6)
         session = {"session_id": sid, "round": 0, "input": inp.model_dump(), "response": resp.model_dump(mode="json"),
                    "history": []}
@@ -146,7 +159,10 @@ async def start_replan(sid: str, req: ReplanRequest) -> dict:
 
     async def work(job):
         job.emit("plan", "Přeplánování se zpětnou vazbou", 0.1)
-        resp = await replan(req, prev.suggestions, session["round"] + 1)
+        if req.spec.scm is not None or prev.spec.scm is not None:
+            resp = await _replan_scm(session, req, prev)
+        else:
+            resp = await replan(req, prev.suggestions, session["round"] + 1)
         session["history"].append({"round": session["round"], "feedback": req.feedback, "answers": req.answers,
                                    "accepted": req.accepted_suggestions, "rejected": req.rejected_suggestions})
         session["round"] += 1
@@ -157,17 +173,49 @@ async def start_replan(sid: str, req: ReplanRequest) -> dict:
     return {"job_id": jobs.start("replan", work).id}
 
 
+async def _replan_scm(session: dict, req: ReplanRequest, prev: PlannerResponse) -> PlannerResponse:
+    """SCM sessions: user edits are kept as-is (validated); free-text feedback triggers a new LLM proposal."""
+    from .causal.planner import plan_story
+    from .causal.service import scenario_spec
+
+    scm = req.spec.scm or prev.spec.scm
+    if req.feedback.strip() or req.answers:
+        inp = ScenarioInput.model_validate(session["input"])
+        extra = "\n\nZpětná vazba uživatele: " + req.feedback + (
+            "\nOdpovědi: " + json.dumps(req.answers, ensure_ascii=False) if req.answers else "")
+        inp = inp.model_copy(update={"story": (inp.story + extra)[:8000], "engine": "scm",
+                                     "custom_model": (inp.custom_model + "\n\nCurrent SCM JSON (keep user edits):\n"
+                                                      + scm.model_dump_json())[:8000]})
+        return await plan_story(inp)
+    from .causal.validation import validate_spec as validate_scm
+    rep = validate_scm(scm)
+    return PlannerResponse(spec=scenario_spec(scm, req.spec), questions=[], suggestions=[],
+                           notes=f"Uživatelské úpravy SCM ověřeny: {rep.status} "
+                                 + "; ".join(c.explanation for c in rep.errors[:5]))
+
+
 @app.post("/api/spec/validate")
 def validate_spec(spec: ScenarioSpec) -> dict:
+    if spec.scm is not None:
+        from .causal.validation import validate_spec as validate_scm
+        rep = validate_scm(spec.scm)
+        return {"errors": [f"{c.target}: {c.explanation}" for c in rep.errors], "order": [], "scm_report": rep.model_dump()}
     return {"errors": spec.structural_errors(), "order": spec.topological_order() if not spec.structural_errors() else []}
 
 
 # --------------------------------------------------------------------------- runs
 @app.post("/api/runs")
 async def start_run(req: RunRequest) -> dict:
-    errs = req.spec.structural_errors()
-    if errs:
-        raise HTTPException(422, {"errors": errs})
+    if req.spec.scm is not None:
+        from .causal.validation import validate_spec as validate_scm
+        rep = validate_scm(req.spec.scm)
+        if rep.status == "FAIL":
+            raise HTTPException(422, {"errors": [f"{c.target}: {c.explanation}" for c in rep.errors],
+                                      "scm_report": rep.model_dump()})
+    else:
+        errs = req.spec.structural_errors()
+        if errs:
+            raise HTTPException(422, {"errors": errs})
     return {"job_id": jobs.start("run", lambda job: execute_run(req, job)).id}
 
 
@@ -315,7 +363,10 @@ async def run_commentary(run_id: str) -> dict:
 
 @app.post("/api/runs/{run_id}/detective")
 async def start_detective(run_id: str) -> dict:
-    _run_or_404(run_id)
+    run = _run_or_404(run_id)
+    if run.get("engine") == "scm":  # blind causal detective on the observed baseline (never the clean world)
+        from .causal.service import legacy_detective_view
+        return {"job_id": jobs.start("detective", lambda job: legacy_detective_view(run_id, job)).id}
     return {"job_id": jobs.start("detective", lambda job: investigate(run_id, job)).id}
 
 
@@ -470,3 +521,190 @@ def doc_sources(run_id: str) -> list[dict]:
                     "columns": [c.name for c in t.columns]})
     out.sort(key=lambda x: (x["items_from"] is None, x["table"]))
     return out
+
+
+# =========================================================================== causal core (SCM engine)
+from pydantic import BaseModel as _BaseModel, Field as _Field  # noqa: E402
+
+from .causal.contracts import (CorruptionConfig, DetectiveConfig, DifficultyConfig, EvaluationConfig,  # noqa: E402
+                               SCMSpec)
+
+
+class SCMEditRequest(_BaseModel):
+    scm: SCMSpec
+    operations: list[dict] = _Field(default_factory=list)
+
+
+class ObserveRequest(_BaseModel):
+    """Manual mode: one corruption configuration, measured difficulty (no optimisation)."""
+
+    corruption: CorruptionConfig = _Field(default_factory=CorruptionConfig)
+    detective: DetectiveConfig = _Field(default_factory=DetectiveConfig)
+    evaluation: EvaluationConfig = _Field(default_factory=EvaluationConfig)
+    repeats: int = _Field(1, ge=1, le=10)
+    with_baseline: bool = True
+
+
+def _scm_run_or_400(run_id: str) -> dict:
+    run = _run_or_404(run_id)
+    if run.get("engine") != "scm":
+        raise HTTPException(400, "not an SCM run")
+    return run
+
+
+@app.get("/api/scm/mechanisms")
+def scm_mechanisms() -> list[dict]:
+    from .causal.mechanisms import catalog as mech_catalog
+    return mech_catalog()
+
+
+@app.get("/api/scm/corruptions")
+def scm_corruptions() -> list[dict]:
+    from .causal.corruption import INTENSITY_MEANING, REGISTRY
+    from .causal.difficulty import DEFAULT_BOUNDS
+    return [{"type": t, "intensity": INTENSITY_MEANING.get(t, ""), "default_bounds": DEFAULT_BOUNDS.get(t)} for t in REGISTRY]
+
+
+@app.get("/api/scm/scenarios")
+def scm_scenarios() -> list[dict]:
+    from .causal.service import list_reference_scenarios
+    return list_reference_scenarios()
+
+
+@app.get("/api/scm/scenarios/{sid}")
+def scm_scenario(sid: str) -> dict:
+    from .causal.service import CausalError, load_reference_scenario, scenario_spec
+    try:
+        return scenario_spec(load_reference_scenario(sid)).model_dump(mode="json")
+    except CausalError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.post("/api/scm/validate")
+def scm_validate(scm: SCMSpec) -> dict:
+    from .causal.contracts import derive_edges
+    from .causal.graph import GraphError, execution_plan
+    from .causal.mechanisms import describe
+    from .causal.validation import validate_spec as validate_scm
+    rep = validate_scm(scm)
+    plan = None
+    try:
+        p = execution_plan(scm)
+        plan = {"pre": p.pre, "loop": p.loop, "post": p.post}
+    except (GraphError, ValueError):
+        pass
+    return {"report": rep.model_dump(), "edges": [e.model_dump() for e in derive_edges(scm)],
+            "mechanisms": {v.variable_id: describe(v) for v in scm.variables}, "execution_plan": plan}
+
+
+@app.post("/api/scm/edit")
+def scm_edit(req: SCMEditRequest) -> dict:
+    from .causal.editing import EditOp, apply_edits
+    from .causal.service import scenario_spec
+    try:
+        ops = [EditOp.model_validate(o) for o in req.operations]
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    res = apply_edits(req.scm, ops)
+    out = res.model_dump(mode="json")
+    if res.report.status != "FAIL":
+        out["spec"] = scenario_spec(res.scm).model_dump(mode="json")
+    return out
+
+
+@app.get("/api/runs/{run_id}/causal")
+def run_causal(run_id: str) -> dict:
+    from .causal.service import causal_summary
+    _scm_run_or_400(run_id)
+    return causal_summary(run_id)
+
+
+@app.post("/api/runs/{run_id}/observe")
+async def run_observe(run_id: str, req: ObserveRequest) -> dict:
+    from .causal.service import manual_mode
+    _scm_run_or_400(run_id)
+    if req.detective.kind == "llm" and req.repeats > 5:
+        raise HTTPException(400, "at most 5 repeats with the LLM detective")
+    return {"job_id": jobs.start("observe", lambda job: manual_mode(
+        run_id, req.corruption, req.detective, req.evaluation, req.repeats, req.with_baseline,
+        progress=lambda m, f=None: job.emit("difficulty", m, f))).id}
+
+
+@app.post("/api/runs/{run_id}/difficulty")
+async def run_difficulty(run_id: str, cfg: DifficultyConfig) -> dict:
+    from .causal.service import automatic_mode
+    _scm_run_or_400(run_id)
+
+    async def work(job):
+        return await automatic_mode(run_id, cfg, progress=lambda m, f=None: job.emit("difficulty", m, f),
+                                    should_stop=lambda: job.cancelled)
+
+    return {"job_id": jobs.start("difficulty", work).id}
+
+
+@app.get("/api/runs/{run_id}/difficulty/{did}")
+def run_difficulty_result(run_id: str, did: str) -> dict:
+    _scm_run_or_400(run_id)
+    if not did.replace("-", "").isalnum():
+        raise HTTPException(400, "invalid id")
+    p = store.run_path(run_id) / "difficulty" / f"{did}.json"
+    if not p.exists():
+        raise HTTPException(404, "not found")
+    return json.loads(p.read_text())
+
+
+@app.get("/api/runs/{run_id}/observations/{obs_id}")
+def run_observation(run_id: str, obs_id: str) -> dict:
+    from .causal.service import CausalError, _obs_dir
+    _scm_run_or_400(run_id)
+    try:
+        d = _obs_dir(run_id, obs_id)
+    except CausalError as e:
+        raise HTTPException(400, str(e))
+    if not (d / "info.json").exists():
+        raise HTTPException(404, "observation not found")
+    return {"info": json.loads((d / "info.json").read_text()), "schema": json.loads((d / "schema.json").read_text())}
+
+
+@app.get("/api/runs/{run_id}/observations/{obs_id}/db")
+def run_observation_db(run_id: str, obs_id: str) -> FileResponse:
+    from .causal.service import CausalError, _obs_dir
+    _scm_run_or_400(run_id)
+    try:
+        d = _obs_dir(run_id, obs_id)
+    except CausalError as e:
+        raise HTTPException(400, str(e))
+    if not (d / "observed.sqlite").exists():
+        raise HTTPException(404, "observation not found")
+    return FileResponse(d / "observed.sqlite", media_type="application/vnd.sqlite3",
+                        filename=f"story2data-{run_id}-{obs_id}.sqlite")
+
+
+@app.post("/api/runs/{run_id}/evaluations/{eval_id}/replay")
+async def run_evaluation_replay(run_id: str, eval_id: str) -> dict:
+    from .causal.service import CausalError, replay_evaluation
+    _scm_run_or_400(run_id)
+    try:
+        return await replay_evaluation(run_id, eval_id)
+    except CausalError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/runs/{run_id}/evaluations/{eval_id}/llm-calls")
+def run_evaluation_llm_calls(run_id: str, eval_id: str) -> list[dict]:
+    _scm_run_or_400(run_id)
+    if not eval_id.isalnum():
+        raise HTTPException(400, "invalid id")
+    p = store.run_path(run_id) / "evaluations" / f"{eval_id}.llm_calls.jsonl"
+    return [json.loads(x) for x in p.read_text().splitlines() if x.strip()] if p.exists() else []
+
+
+@app.get("/api/runs/{run_id}/evaluations/{eval_id}")
+def run_evaluation(run_id: str, eval_id: str) -> dict:
+    _scm_run_or_400(run_id)
+    if not eval_id.isalnum():
+        raise HTTPException(400, "invalid id")
+    p = store.run_path(run_id) / "evaluations" / f"{eval_id}.json"
+    if not p.exists():
+        raise HTTPException(404, "evaluation not found")
+    return json.loads(p.read_text())

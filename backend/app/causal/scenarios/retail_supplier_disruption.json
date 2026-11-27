@@ -1,0 +1,917 @@
+{
+ "meta": {
+  "scenario_id": "retail_supplier_disruption",
+  "name": "Síť prodejen – zpoždění dodavatele",
+  "description": "Tržby sítě prodejen klesají, přestože poptávka je stabilní. Příčinou jsou narůstající zpoždění jednoho dodavatele.",
+  "domain": "retail",
+  "original_story": "Tržby sítě prodejen postupně klesají, přestože poptávka zůstává stabilní. Skutečnou příčinou jsou narůstající zpoždění jednoho dodavatele. Ta vedou k výpadkům zásob, menšímu počtu realizovaných nákupů a většímu počtu stížností.",
+  "refined_story": "Od 60. dne se u dodavatele 1 (mléčné výrobky) lineárně během 40 dní zhoršuje spolehlivost. Zpoždění dodávek snižuje pravděpodobnost včasného doplnění zásob, prodejny vyprodávají zboží, prodeje jsou omezeny zásobou, tržby klesají a nespokojení zákazníci podávají stížnosti na nedostupnost. Poptávka (návštěvnost) se nemění; prodejna 3 má od 90. dne nového konkurenta (distraktor).",
+  "language": "cs",
+  "seed": 42,
+  "assumptions": [
+   "Prodejny doplňují zásobu každý den na cílovou úroveň 12 kusů (order-up-to).",
+   "Každý den s nedostatkem zásoby vzniká objednávka; dodavatel ji doručí včas s pravděpodobností klesající s jeho aktuálním zpožděním, jinak se zboží v daný den nenaskladní.",
+   "Prodej je omezen dostupnou zásobou (bez backorders); neuspokojená poptávka není v datech vidět."
+  ]
+ },
+ "time": {
+  "start": "2025-01-01",
+  "periods": 150,
+  "frequency": "D",
+  "time_column": "date"
+ },
+ "entities": [
+  {
+   "entity_id": "suppliers",
+   "grain": "jeden dodavatel",
+   "kind": "base",
+   "count": 5,
+   "primary_key": "supplier_id"
+  },
+  {
+   "entity_id": "products",
+   "grain": "jeden produkt",
+   "kind": "base",
+   "count": 30,
+   "primary_key": "product_id",
+   "assignments": [
+    {
+     "entity": "suppliers",
+     "method": "balanced"
+    }
+   ]
+  },
+  {
+   "entity_id": "stores",
+   "grain": "jedna prodejna",
+   "kind": "base",
+   "count": 4,
+   "primary_key": "store_id"
+  },
+  {
+   "entity_id": "supplier_days",
+   "grain": "jeden dodavatel v jeden den",
+   "kind": "cross",
+   "cross": [
+    "suppliers"
+   ],
+   "temporal": true,
+   "primary_key": "supplier_day_id",
+   "export": false
+  },
+  {
+   "entity_id": "store_days",
+   "name": "store_daily",
+   "grain": "jedna prodejna v jeden den",
+   "kind": "cross",
+   "cross": [
+    "stores"
+   ],
+   "temporal": true,
+   "primary_key": "store_day_id"
+  },
+  {
+   "entity_id": "stock_days",
+   "name": "inventory_snapshots",
+   "grain": "jeden produkt v jedné prodejně v jeden den",
+   "kind": "cross",
+   "cross": [
+    "stores",
+    "products"
+   ],
+   "temporal": true,
+   "primary_key": "snapshot_id"
+  },
+  {
+   "entity_id": "deliveries",
+   "grain": "jedna objednávka doplnění zásoby u dodavatele (s evidovaným zpožděním dodávky)",
+   "kind": "child",
+   "parent": "stock_days",
+   "count_variable": "order_placed",
+   "primary_key": "order_id",
+   "name": "purchase_orders"
+  },
+  {
+   "entity_id": "complaints",
+   "grain": "jedna stížnost zákazníka",
+   "kind": "child",
+   "parent": "stock_days",
+   "count_variable": "n_complaints",
+   "primary_key": "complaint_id"
+  }
+ ],
+ "variables": [
+  {
+   "variable_id": "supplier_name",
+   "entity": "suppliers",
+   "column": "name",
+   "semantic_type": "label",
+   "data_type": "text",
+   "role": "label",
+   "mechanism": {
+    "type": "label",
+    "params": {
+     "values": [
+      "Mlékárna Horní Dvůr",
+      "Pekárna Zlatý klas",
+      "Ovoce Morava",
+      "Masna Brod",
+      "Nápoje Vltava"
+     ]
+    }
+   }
+  },
+  {
+   "variable_id": "supplier_category",
+   "entity": "suppliers",
+   "column": "category",
+   "semantic_type": "categorical",
+   "data_type": "category",
+   "role": "label",
+   "categories": [
+    "mléčné",
+    "pečivo",
+    "ovoce a zelenina",
+    "maso",
+    "nápoje"
+   ],
+   "mechanism": {
+    "type": "label",
+    "params": {
+     "values": [
+      "mléčné",
+      "pečivo",
+      "ovoce a zelenina",
+      "maso",
+      "nápoje"
+     ]
+    }
+   }
+  },
+  {
+   "variable_id": "base_delay",
+   "entity": "suppliers",
+   "column": null,
+   "observability": "latent",
+   "semantic_type": "continuous",
+   "description": "Běžné zpoždění dodavatele ve dnech",
+   "mechanism": {
+    "type": "exogenous",
+    "params": {
+     "distribution": {
+      "family": "gamma",
+      "params": {
+       "mean": 0.6,
+       "sd": 0.2
+      }
+     }
+    }
+   }
+  },
+  {
+   "variable_id": "product_name",
+   "entity": "products",
+   "column": "name",
+   "semantic_type": "label",
+   "data_type": "text",
+   "role": "label",
+   "mechanism": {
+    "type": "label",
+    "params": {
+     "pattern": "Produkt {n}"
+    }
+   }
+  },
+  {
+   "variable_id": "product_category",
+   "entity": "products",
+   "column": "category",
+   "semantic_type": "categorical",
+   "data_type": "category",
+   "categories": [
+    "mléčné",
+    "pečivo",
+    "ovoce a zelenina",
+    "maso",
+    "nápoje"
+   ],
+   "parents": [
+    {
+     "variable": "supplier_category",
+     "alias": "cat"
+    }
+   ],
+   "mechanism": {
+    "type": "lookup",
+    "params": {}
+   }
+  },
+  {
+   "variable_id": "unit_price",
+   "entity": "products",
+   "column": "unit_price",
+   "semantic_type": "continuous",
+   "unit": "Kč",
+   "public_description": "jednotková cena",
+   "constraints": {
+    "round": 2
+   },
+   "mechanism": {
+    "type": "exogenous",
+    "params": {
+     "distribution": {
+      "family": "lognormal",
+      "params": {
+       "mean": 60,
+       "sd": 25
+      }
+     }
+    }
+   }
+  },
+  {
+   "variable_id": "base_demand",
+   "entity": "products",
+   "column": null,
+   "observability": "latent",
+   "description": "Průměrná denní poptávka po produktu v průměrné prodejně (ks)",
+   "mechanism": {
+    "type": "exogenous",
+    "params": {
+     "distribution": {
+      "family": "gamma",
+      "params": {
+       "mean": 3.0,
+       "sd": 1.0
+      }
+     }
+    }
+   }
+  },
+  {
+   "variable_id": "store_name",
+   "entity": "stores",
+   "column": "name",
+   "semantic_type": "label",
+   "data_type": "text",
+   "role": "label",
+   "mechanism": {
+    "type": "label",
+    "params": {
+     "pattern": "Prodejna {n}"
+    }
+   }
+  },
+  {
+   "variable_id": "store_size",
+   "entity": "stores",
+   "column": "size_index",
+   "semantic_type": "continuous",
+   "public_description": "index velikosti prodejny",
+   "constraints": {
+    "round": 3
+   },
+   "mechanism": {
+    "type": "exogenous",
+    "params": {
+     "distribution": {
+      "family": "lognormal",
+      "params": {
+       "mean": 1.0,
+       "sd": 0.25
+      }
+     }
+    }
+   }
+  },
+  {
+   "variable_id": "disruption",
+   "entity": "supplier_days",
+   "column": null,
+   "observability": "latent",
+   "description": "Míra provozního problému dodavatele (0 = žádný, 1 = plný)",
+   "mechanism": {
+    "type": "exogenous",
+    "params": {
+     "distribution": {
+      "family": "constant",
+      "params": {
+       "value": 0
+      }
+     }
+    }
+   }
+  },
+  {
+   "variable_id": "delay_days",
+   "entity": "supplier_days",
+   "column": null,
+   "observability": "latent",
+   "data_type": "int",
+   "semantic_type": "count",
+   "description": "Zpoždění dodávek dodavatele v daný den (dny)",
+   "parents": [
+    {
+     "variable": "base_delay"
+    },
+    {
+     "variable": "disruption"
+    }
+   ],
+   "mechanism": {
+    "type": "poisson_regression",
+    "params": {
+     "predictor": "log(base_delay) + 2.1 * disruption"
+    }
+   }
+  },
+  {
+   "variable_id": "visits",
+   "entity": "store_days",
+   "column": "visits",
+   "data_type": "int",
+   "semantic_type": "count",
+   "public_description": "počet návštěvníků za den",
+   "parents": [
+    {
+     "variable": "store_size",
+     "alias": "size"
+    }
+   ],
+   "mechanism": {
+    "type": "poisson_regression",
+    "params": {
+     "predictor": "log(140 * size) + 0.18 * (dow >= 5)"
+    }
+   }
+  },
+  {
+   "variable_id": "store_revenue",
+   "entity": "store_days",
+   "column": "revenue",
+   "semantic_type": "continuous",
+   "unit": "Kč",
+   "public_description": "denní tržba prodejny",
+   "constraints": {
+    "round": 2
+   },
+   "parents": [
+    {
+     "variable": "sales_amount",
+     "aggregation": "sum"
+    }
+   ],
+   "mechanism": {
+    "type": "aggregation",
+    "params": {}
+   }
+  },
+  {
+   "variable_id": "demand",
+   "entity": "stock_days",
+   "column": null,
+   "observability": "latent",
+   "data_type": "int",
+   "semantic_type": "count",
+   "parents": [
+    {
+     "variable": "base_demand"
+    },
+    {
+     "variable": "visits"
+    }
+   ],
+   "mechanism": {
+    "type": "poisson_regression",
+    "params": {
+     "predictor": "log(base_demand * visits / 140)"
+    }
+   }
+  },
+  {
+   "variable_id": "restock_qty",
+   "entity": "stock_days",
+   "column": null,
+   "observability": "latent",
+   "data_type": "int",
+   "description": "Objednané množství na doplnění na cílovou zásobu",
+   "parents": [
+    {
+     "variable": "closing_stock",
+     "alias": "stock_prev",
+     "lag": 1
+    }
+   ],
+   "mechanism": {
+    "type": "deterministic_expression",
+    "params": {
+     "expression": "max(12 - stock_prev, 0)"
+    }
+   }
+  },
+  {
+   "variable_id": "delivery_arrived",
+   "entity": "stock_days",
+   "column": null,
+   "observability": "latent",
+   "data_type": "bool",
+   "semantic_type": "binary",
+   "parents": [
+    {
+     "variable": "restock_qty",
+     "alias": "restock"
+    },
+    {
+     "variable": "delay_days",
+     "alias": "delay"
+    }
+   ],
+   "mechanism": {
+    "type": "logistic",
+    "params": {
+     "predictor": "where(restock > 0, 2.4 - 1.5 * delay, -40)"
+    }
+   }
+  },
+  {
+   "variable_id": "order_placed",
+   "entity": "stock_days",
+   "column": null,
+   "observability": "latent",
+   "data_type": "bool",
+   "description": "Prodejna v daný den objednala doplnění",
+   "parents": [
+    {
+     "variable": "restock_qty",
+     "alias": "restock"
+    }
+   ],
+   "mechanism": {
+    "type": "deterministic_expression",
+    "params": {
+     "expression": "restock > 0"
+    }
+   }
+  },
+  {
+   "variable_id": "delivered_qty",
+   "entity": "stock_days",
+   "column": "delivered_qty",
+   "data_type": "int",
+   "semantic_type": "count",
+   "public_description": "naskladněné množství v daný den",
+   "parents": [
+    {
+     "variable": "restock_qty",
+     "alias": "restock"
+    },
+    {
+     "variable": "delivery_arrived",
+     "alias": "arrived"
+    }
+   ],
+   "mechanism": {
+    "type": "deterministic_expression",
+    "params": {
+     "expression": "restock * arrived"
+    }
+   }
+  },
+  {
+   "variable_id": "units_sold",
+   "entity": "stock_days",
+   "column": "units_sold",
+   "data_type": "int",
+   "semantic_type": "count",
+   "public_description": "prodané kusy",
+   "parents": [
+    {
+     "variable": "demand"
+    },
+    {
+     "variable": "closing_stock",
+     "alias": "stock_prev",
+     "lag": 1
+    },
+    {
+     "variable": "delivered_qty",
+     "alias": "inflow"
+    }
+   ],
+   "mechanism": {
+    "type": "deterministic_expression",
+    "params": {
+     "expression": "min(demand, stock_prev + inflow)"
+    }
+   }
+  },
+  {
+   "variable_id": "closing_stock",
+   "entity": "stock_days",
+   "column": "closing_stock",
+   "data_type": "int",
+   "semantic_type": "count",
+   "public_description": "zásoba na konci dne",
+   "initial_state": 12,
+   "parents": [
+    {
+     "variable": "closing_stock",
+     "alias": "stock_prev",
+     "lag": 1
+    },
+    {
+     "variable": "delivered_qty",
+     "alias": "inflow"
+    },
+    {
+     "variable": "units_sold",
+     "alias": "sold"
+    }
+   ],
+   "mechanism": {
+    "type": "deterministic_expression",
+    "params": {
+     "expression": "stock_prev + inflow - sold"
+    }
+   }
+  },
+  {
+   "variable_id": "lost_sales",
+   "entity": "stock_days",
+   "column": null,
+   "observability": "latent",
+   "data_type": "int",
+   "parents": [
+    {
+     "variable": "demand"
+    },
+    {
+     "variable": "units_sold",
+     "alias": "sold"
+    }
+   ],
+   "mechanism": {
+    "type": "deterministic_expression",
+    "params": {
+     "expression": "demand - sold"
+    }
+   }
+  },
+  {
+   "variable_id": "had_shortage",
+   "entity": "stock_days",
+   "column": null,
+   "observability": "latent",
+   "data_type": "bool",
+   "parents": [
+    {
+     "variable": "lost_sales",
+     "alias": "lost"
+    }
+   ],
+   "mechanism": {
+    "type": "deterministic_expression",
+    "params": {
+     "expression": "lost > 0"
+    }
+   }
+  },
+  {
+   "variable_id": "sales_amount",
+   "entity": "stock_days",
+   "column": "sales_amount",
+   "semantic_type": "continuous",
+   "unit": "Kč",
+   "public_description": "tržba za produkt",
+   "constraints": {
+    "round": 2
+   },
+   "parents": [
+    {
+     "variable": "units_sold",
+     "alias": "sold"
+    },
+    {
+     "variable": "unit_price",
+     "alias": "price"
+    }
+   ],
+   "mechanism": {
+    "type": "deterministic_expression",
+    "params": {
+     "expression": "sold * price"
+    }
+   }
+  },
+  {
+   "variable_id": "n_complaints",
+   "entity": "stock_days",
+   "column": null,
+   "observability": "latent",
+   "data_type": "int",
+   "parents": [
+    {
+     "variable": "lost_sales",
+     "alias": "lost"
+    }
+   ],
+   "mechanism": {
+    "type": "poisson_regression",
+    "params": {
+     "predictor": "log(0.004 + 0.2 * max(lost, 0))"
+    }
+   }
+  },
+  {
+   "variable_id": "delivery_quantity",
+   "entity": "deliveries",
+   "column": "quantity",
+   "data_type": "int",
+   "public_description": "objednané množství",
+   "parents": [
+    {
+     "variable": "restock_qty"
+    }
+   ],
+   "mechanism": {
+    "type": "lookup",
+    "params": {}
+   }
+  },
+  {
+   "variable_id": "delivery_delay",
+   "entity": "deliveries",
+   "column": "delay_days",
+   "data_type": "int",
+   "semantic_type": "count",
+   "public_description": "zpoždění dodávky oproti plánu (dny)",
+   "parents": [
+    {
+     "variable": "delay_days"
+    }
+   ],
+   "mechanism": {
+    "type": "lookup",
+    "params": {}
+   }
+  },
+  {
+   "variable_id": "complaint_category",
+   "entity": "complaints",
+   "column": "category",
+   "data_type": "category",
+   "semantic_type": "categorical",
+   "categories": [
+    "nedostupnost",
+    "kvalita",
+    "obsluha",
+    "cena"
+   ],
+   "public_description": "kategorie stížnosti",
+   "parents": [
+    {
+     "variable": "had_shortage",
+     "alias": "short"
+    }
+   ],
+   "mechanism": {
+    "type": "categorical_cpt",
+    "params": {
+     "table": [
+      {
+       "when": {
+        "short": "true"
+       },
+       "probs": {
+        "nedostupnost": 0.75,
+        "kvalita": 0.1,
+        "obsluha": 0.1,
+        "cena": 0.05
+       }
+      }
+     ],
+     "default": {
+      "nedostupnost": 0.05,
+      "kvalita": 0.4,
+      "obsluha": 0.35,
+      "cena": 0.2
+     }
+    }
+   }
+  },
+  {
+   "variable_id": "complaint_text",
+   "entity": "complaints",
+   "column": "text",
+   "data_type": "text",
+   "semantic_type": "text",
+   "role": "text",
+   "public_description": "text stížnosti",
+   "parents": [
+    {
+     "variable": "complaint_category",
+     "alias": "category"
+    },
+    {
+     "variable": "product_name",
+     "alias": "product"
+    },
+    {
+     "variable": "store_name",
+     "alias": "store"
+    }
+   ],
+   "mechanism": {
+    "type": "text_template",
+    "params": {
+     "select_by": "category",
+     "explicitness": 0.7,
+     "templates": {
+      "nedostupnost": [
+       "V prodejně {store} už několikátý den chybí {product}.",
+       "{product} byl v regálu prázdný, prosím o doplnění ({store}).",
+       "Proč nemáte {product}? Jezdím do {store} kvůli němu."
+      ],
+      "kvalita": [
+       "{product} z {store} měl prošlé datum.",
+       "Kvalita výrobku {product} se zhoršila."
+      ],
+      "obsluha": [
+       "Nepříjemná obsluha na pokladně v {store}.",
+       "Dlouhé fronty v {store}."
+      ],
+      "cena": [
+       "{product} je dražší než jinde.",
+       "Cena za {product} mi přijde přemrštěná."
+      ]
+     },
+     "vague_templates": [
+      "Nejsem spokojen s nákupem v {store}.",
+      "Zlepšete se prosím.",
+      "Nákup nedopadl podle očekávání."
+     ]
+    }
+   }
+  }
+ ],
+ "events": [
+  {
+   "event_id": "supplier_disruption",
+   "description": "Narůstající provozní problémy dodavatele 1",
+   "affected_variables": [
+    "disruption"
+   ],
+   "affected_entities": "supplier_id == 1",
+   "start_time": "2025-03-02",
+   "intervention_type": "set_value",
+   "intervention_parameters": {
+    "value": 1.0
+   },
+   "ramp_profile": "linear",
+   "ramp_periods": 40,
+   "kind": "story"
+  },
+  {
+   "event_id": "competitor_opening",
+   "description": "Nový konkurent u prodejny 3 sníží návštěvnost",
+   "affected_variables": [
+    "visits"
+   ],
+   "affected_entities": "store_id == 3",
+   "start_time": "2025-04-01",
+   "intervention_type": "param_change",
+   "intervention_parameters": {
+    "param": "predictor",
+    "value": "log(110 * size) + 0.18 * (dow >= 5)"
+   },
+   "ramp_profile": "step",
+   "kind": "distractor"
+  }
+ ],
+ "ground_truth": {
+  "story_facts": [
+   {
+    "fact_id": "root_cause_supplier",
+    "kind": "root_cause",
+    "importance": 3,
+    "description": "Hlavní příčinou je rostoucí zpoždění dodávek dodavatele 1 od začátku března.",
+    "event_id": "supplier_disruption",
+    "entity_ids": {
+     "suppliers": [
+      1
+     ]
+    },
+    "evidence_variables": [
+     "delivery_delay"
+    ],
+    "expected_direction": "+",
+    "tolerance_periods": 21
+   },
+   {
+    "fact_id": "stock_drop_affected",
+    "kind": "event",
+    "importance": 2,
+    "description": "Zásoby a prodeje produktů dodavatele 1 klesají po začátku problému.",
+    "event_id": "supplier_disruption",
+    "entity_ids": {
+     "suppliers": [
+      1
+     ]
+    },
+    "evidence_variables": [
+     "closing_stock",
+     "units_sold",
+     "sales_amount"
+    ],
+    "expected_direction": "-",
+    "tolerance_periods": 30
+   },
+   {
+    "fact_id": "complaints_rise",
+    "kind": "event",
+    "importance": 1.5,
+    "description": "Roste počet stížností na nedostupnost u produktů dodavatele 1.",
+    "event_id": "supplier_disruption",
+    "entity_ids": {
+     "suppliers": [
+      1
+     ]
+    },
+    "evidence_variables": [
+     "complaint_category"
+    ],
+    "expected_direction": "+",
+    "tolerance_periods": 30
+   },
+   {
+    "fact_id": "edge_delivery_sales",
+    "kind": "edge",
+    "importance": 1.5,
+    "source": "delivered_qty",
+    "target": "units_sold",
+    "expected_direction": "+",
+    "description": "Naskladněné množství omezuje prodeje (stock-flow)."
+   },
+   {
+    "fact_id": "edge_sales_revenue",
+    "kind": "edge",
+    "importance": 1,
+    "source": "units_sold",
+    "target": "sales_amount",
+    "expected_direction": "+",
+    "description": "Prodané kusy určují tržbu."
+   },
+   {
+    "fact_id": "edge_stock_sales",
+    "kind": "edge",
+    "importance": 1,
+    "source": "closing_stock",
+    "target": "units_sold",
+    "expected_direction": "+",
+    "expected_lag": 1,
+    "description": "Zásoba z předchozího dne omezuje prodej."
+   }
+  ],
+  "key_causes": [
+   "disruption",
+   "delay_days"
+  ],
+  "key_effects": [
+   "units_sold",
+   "store_revenue",
+   "n_complaints"
+  ],
+  "control_groups": [
+   {
+    "description": "Produkty ostatních dodavatelů ve stejných prodejnách",
+    "entity": "stock_days",
+    "filter": "supplier_id != 1"
+   }
+  ],
+  "alternative_interpretations": [
+   "Pokles poptávky (vyvráceno: návštěvnost je stabilní kromě prodejny 3).",
+   "Lokální konkurence u prodejny 3 (skutečná, ale zasahuje všechny produkty jen v jedné prodejně)."
+  ],
+  "effects_to_estimate": [
+   [
+    "delivered_qty",
+    "units_sold"
+   ],
+   [
+    "units_sold",
+    "sales_amount"
+   ]
+  ]
+ },
+ "difficulty": {
+  "target_difficulty": 50,
+  "allowed_corruption_types": [
+   "missing_values_mcar",
+   "gaussian_measurement_noise",
+   "category_misclassification",
+   "exact_duplicates",
+   "column_value_shuffle"
+  ],
+  "protected_columns": []
+ }
+}

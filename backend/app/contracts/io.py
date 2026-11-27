@@ -26,6 +26,8 @@ class ScenarioInput(BaseModel):
     custom_model: str = Field("", max_length=8000, description="Optional user data model / ontology")
     data_language: str = "cs"
     preset: Optional[str] = None
+    engine: Literal["module", "scm"] = Field(
+        "module", description="'scm' = plan an executable structural causal model (app.causal) instead of a module")
 
 
 # --------------------------------------------------------------------------- planner
