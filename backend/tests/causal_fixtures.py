@@ -10,7 +10,7 @@ SCEN = Path(__file__).resolve().parents[1] / "app" / "causal" / "scenarios"
 
 
 def reference(name: str) -> SCMSpec:
-    return SCMSpec.model_validate(json.loads((SCEN / f"{name}.json").read_text()))
+    return SCMSpec.model_validate(json.loads((SCEN / f"{name}.json").read_text(encoding="utf-8")))
 
 
 def normal(sd: float, mean: float = 0.0) -> dict:

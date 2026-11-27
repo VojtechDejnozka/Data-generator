@@ -22,6 +22,7 @@ from typing import Any, Literal, Optional, TypeVar
 from pydantic import BaseModel, ValidationError
 
 from ..config import Settings, get_settings
+from ..storage.text_files import read_saved_text
 from .pricing import estimate_cost
 from .schema_utils import gemini_schema
 
@@ -208,15 +209,15 @@ class LLMClient:
             return obj
 
         if use_cache and self.settings.llm_cache and self._cache_path(key).exists():
-            cached = json.loads(self._cache_path(key).read_text())
             try:
+                cached = json.loads(read_saved_text(self._cache_path(key)))
                 obj = schema.model_validate(cached["response"])
                 if tracker:
                     tracker.add(CallRecord(role=role, task=task, model=cached.get("model", "?"), cached=True,
                                            cache_key=key), cached["response"])
                 return obj
-            except ValidationError:
-                pass  # stale cache entry (schema changed) -> regenerate
+            except (json.JSONDecodeError, UnicodeDecodeError, ValidationError):
+                pass  # regenerate an incomplete or stale cache entry
 
         async with self._sem():
             obj, raw, rec = await self._call_with_retries(role, task, prompt, schema, system, temperature, key,
@@ -225,7 +226,7 @@ class LLMClient:
             tracker.add(rec, raw)
         if self.settings.llm_cache:
             self._cache_path(key).write_text(json.dumps({"model": rec.model, "task": task, "response": raw},
-                                                        ensure_ascii=False))
+                                                        ensure_ascii=False), encoding="utf-8")
         return obj
 
     # -- internals ---------------------------------------------------------------

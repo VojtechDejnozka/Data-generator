@@ -48,8 +48,8 @@ def test_llm_detective_calls_are_recorded_accounted_and_replayable(tmp_path, mon
     assert ev.estimate.usage == ev.usage and ev.estimate.agent["mock"] is False
     eid = ev.estimate.evaluation_ids[0]
     d = service.store.run_path(run_id) / "evaluations"
-    doc = json.loads((d / f"{eid}.json").read_text())
-    calls = [json.loads(x) for x in (d / f"{eid}.llm_calls.jsonl").read_text().splitlines()]
+    doc = json.loads((d / f"{eid}.json").read_text(encoding="utf-8"))
+    calls = [json.loads(x) for x in (d / f"{eid}.llm_calls.jsonl").read_text(encoding="utf-8").splitlines()]
     assert [c["task"] for c in calls] == ["causal_detective", "causal_detective"]
     assert calls[0]["model"] == "gemini-3.5-flash-lite" and calls[0]["response"]["tool"] == "execute_sql"
     assert doc["usage"]["tokens"] == 250 and doc["replay"]["llm_calls"] == 2

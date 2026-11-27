@@ -15,6 +15,7 @@ import pandas as pd
 
 from ..config import get_settings
 from ..contracts.spec import ScenarioSpec, Table
+from .text_files import read_saved_text
 
 SQL_TYPES = {"int": "INTEGER", "float": "REAL", "text": "TEXT", "date": "TEXT", "datetime": "TEXT", "bool": "INTEGER"}
 
@@ -116,14 +117,14 @@ def read_table(run_id: str, name: str) -> pd.DataFrame:
 def save_json(run_id: str, name: str, data: Any) -> None:
     p = run_path(run_id)
     p.mkdir(parents=True, exist_ok=True)
-    (p / name).write_text(json.dumps(data, ensure_ascii=False, indent=1, default=_json_default))
+    (p / name).write_text(json.dumps(data, ensure_ascii=False, indent=1, default=_json_default), encoding="utf-8")
 
 
 def load_json(run_id: str, name: str, default: Any = None) -> Any:
     p = run_path(run_id) / name
     if not p.exists():
         return default
-    return json.loads(p.read_text())
+    return json.loads(read_saved_text(p))
 
 
 def _json_default(o: Any) -> Any:
@@ -144,8 +145,8 @@ def list_runs() -> list[dict[str, Any]]:
     out = []
     for p in sorted(runs_dir().glob("*/run.json"), reverse=True):
         try:
-            r = json.loads(p.read_text())
-        except json.JSONDecodeError:
+            r = json.loads(read_saved_text(p))
+        except (json.JSONDecodeError, UnicodeDecodeError):
             continue
         item = {k: r.get(k) for k in ("run_id", "label", "status", "created_at", "parent_run_id",
                                       "knob_values", "verdict", "row_counts", "name", "mock")}

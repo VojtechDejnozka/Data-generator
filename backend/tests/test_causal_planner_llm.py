@@ -40,6 +40,19 @@ def test_draft_rejects_unexecutable_model_with_concrete_errors():
         SCMDraft.model_validate({"scm": d})
 
 
+def test_draft_repairs_lookup_without_removing_finer_grain_aggregation():
+    scm = scm_obj()
+    weekly_score = next(var for var in scm["variables"] if var["variable_id"] == "weekly_score")
+    parent = next(p for p in weekly_score["parents"] if p["variable"] == "prior_score")
+    parent["aggregation"] = "mean"
+
+    draft = SCMDraft.model_validate({"scm": scm})
+    repaired = next(p for p in draft.scm.variable("weekly_score").parents if p.variable == "prior_score")
+    assert repaired.aggregation is None and repaired.alias == "prior"
+    assert draft.scm.variable("avg_weekly_score").parents[0].aggregation == "mean"
+    assert any("weekly_score" in note and "prior_score" in note for note in draft.auto_repairs)
+
+
 def test_json_mode_and_repair_rounds_with_fake_gemini(tmp_path):
     quota = errors.APIError(429, {"error": {"code": 429, "message": "You exceeded your current quota ... RESOURCE_EXHAUSTED"}})
     bad_json = '{"scm": {"meta": {"name": "x"}, "entities": [ {broken'

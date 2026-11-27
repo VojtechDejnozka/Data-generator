@@ -256,7 +256,7 @@ async def execute_run(req: RunRequest, job: Job, base_params: dict[str, Any] | N
     store.save_json(run_id, "profile.json", ev["profile"])
     store.save_json(run_id, "dashboard.json", widgets)
     store.save_json(run_id, "manifest.json", gen.manifest)
-    with open(store.run_path(run_id) / "llm_calls.jsonl", "w") as f:
+    with open(store.run_path(run_id) / "llm_calls.jsonl", "w", encoding="utf-8") as f:
         for key, resp in tracker.responses.items():
             f.write(json.dumps({"cache_key": key, "response": resp}, ensure_ascii=False) + "\n")
     u = tracker.summary()
