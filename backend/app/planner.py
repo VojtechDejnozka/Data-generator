@@ -1,0 +1,237 @@
+"""STRONG-model planning: ScenarioInput -> ScenarioSpec (+questions, suggestions); spec -> GenerationPlan."""
+from __future__ import annotations
+
+import json
+import logging
+from typing import Any
+
+from .contracts.io import (GenerationPlan, PlannerResponse, ReplanRequest, ScenarioInput, Suggestion, WorkPackage)
+from .contracts.spec import ScenarioSpec
+from .generation.scenarios.registry import MODULES, catalog, get_module
+from .llm.client import get_llm
+
+log = logging.getLogger("planner")
+
+SYSTEM = """You are the planning brain of Story2Data, a generator of linked synthetic datasets in which a business
+story is traceable through causal and temporal relationships between records (not through comments or a single
+pre-filled KPI). You design a ScenarioSpec: tables (with PK/FK), the causal chain, distractors (seasonality, noise,
+red herrings), knobs for what-if analysis, deterministic invariants, evidence SQL queries (SQLite dialect, read-only
+SELECT, use {{knob:<name>}} or {{meta:period_start}} placeholders) and a dashboard config.
+Rules:
+- If a scenario module from the catalog fits the story, set meta.archetype to its id and use its tables/knobs
+  exactly (the deterministic simulator owns them); you may add extra tables with strategy llm_rows that reference them.
+- Otherwise set meta.archetype null and design tables with strategy llm_dimension (master data) or llm_rows.
+- Evidence must make each causal step verifiable and must compare affected entities against a control group.
+- Table and column names: snake_case ASCII. Descriptions, story texts and labels in Czech.
+- Return questions only when an answer would materially change the data; give a sensible default_answer.
+- Suggestions: concrete improvements (extra tables, columns, distractors, causal steps); fill the structured patch
+  field (table / column / distractor / causal_step / knob) when possible."""
+
+
+def _template_for(inp: ScenarioInput) -> dict[str, Any] | None:
+    """Pick the best module by a cheap keyword heuristic to show the planner a full example spec."""
+    text = f"{inp.company} {inp.environment} {inp.story}".lower()
+    if inp.preset in MODULES:
+        return MODULES[inp.preset].default_spec(inp).model_dump(mode="json")
+    keys = ["dodav", "suppl", "prodej", "retail", "zásob", "sklad", "stock", "obchod"]
+    if any(k in text for k in keys):
+        m = next(iter(MODULES.values()))
+        return m.default_spec(inp).model_dump(mode="json")
+    return None
+
+
+def _post_process(resp: PlannerResponse, inp: ScenarioInput | None) -> PlannerResponse:
+    spec = resp.spec
+    notes = [resp.notes] if resp.notes else []
+    module = get_module(spec.meta.archetype)
+    if spec.meta.archetype and not module:
+        notes.append(f"Neznámý archetyp {spec.meta.archetype} – použije se obecná cesta llm_rows.")
+        spec = spec.model_copy(update={"meta": spec.meta.model_copy(update={"archetype": None})})
+    if module:
+        spec, warnings = module.normalize_spec(spec)
+        notes += warnings
+        # Keep the module's tested evidence / invariants if the planner returned none.
+        upd: dict[str, Any] = {}
+        if not spec.evidence:
+            upd["evidence"] = module.evidence()
+        if not spec.invariants:
+            upd["invariants"] = module.invariants()
+        if not spec.dashboard.widgets:
+            from .contracts.spec import Dashboard
+            upd["dashboard"] = Dashboard(title=spec.meta.name, widgets=module.dashboard_widgets())
+        if upd:
+            spec = spec.model_copy(update=upd)
+    if inp is not None:
+        spec = spec.model_copy(update={"meta": spec.meta.model_copy(update={"seed": inp.seed})})
+    errs = spec.structural_errors()
+    if errs:
+        notes.append("Strukturální problémy: " + "; ".join(errs))
+    return resp.model_copy(update={"spec": spec, "notes": "\n".join(n for n in notes if n)})
+
+
+async def plan_scenario(inp: ScenarioInput) -> PlannerResponse:
+    template = _template_for(inp)
+    prompt = (
+        "## Scenario input\n" + json.dumps(inp.model_dump(), ensure_ascii=False, indent=1)
+        + "\n\n## Scenario module catalog (deterministic simulators)\n" + json.dumps(catalog(), ensure_ascii=False)
+        + ("\n\n## Template spec of the best matching module (adapt texts, counts, knob defaults, keep table schemas)\n"
+           + json.dumps(template, ensure_ascii=False) if template else "")
+        + "\n\nProduce the PlannerResponse: spec, up to 3 clarifying questions, 2-5 suggestions, notes."
+    )
+    llm = get_llm()
+    resp = await llm.structured(role="strong", task="plan_spec", prompt=prompt, schema=PlannerResponse, system=SYSTEM,
+                                mock_context={"input": inp.model_dump()})
+    return _post_process(resp, inp)
+
+
+def apply_suggestion(spec: ScenarioSpec, s: Suggestion) -> tuple[ScenarioSpec, bool]:
+    """Apply a structured suggestion patch. Returns (spec, applied)."""
+    if s.kind == "add_table" and s.table and not spec.table(s.table.name):
+        t = s.table if s.table.strategy != "simulation" else s.table.model_copy(update={"strategy": "llm_rows"})
+        return spec.model_copy(update={"tables": [*spec.tables, t]}), True
+    if s.kind == "add_column" and s.column:
+        t = spec.table(s.column.table)
+        if t and t.strategy != "simulation" and not t.column(s.column.column.name):
+            nt = t.model_copy(update={"columns": [*t.columns, s.column.column]})
+            return spec.model_copy(update={"tables": [nt if x.name == t.name else x for x in spec.tables]}), True
+    if s.kind == "add_distractor" and s.distractor:
+        story = spec.story.model_copy(update={"distractors": [*spec.story.distractors, s.distractor]})
+        return spec.model_copy(update={"story": story}), True
+    if s.kind == "add_causal_step" and s.causal_step:
+        story = spec.story.model_copy(update={"causal_chain": [*spec.story.causal_chain, s.causal_step]})
+        return spec.model_copy(update={"story": story}), True
+    if s.kind == "add_knob" and s.knob and not spec.knob(s.knob.name):
+        return spec.model_copy(update={"knobs": [*spec.knobs, s.knob]}), True
+    return spec, False
+
+
+async def replan(req: ReplanRequest, suggestions: list[Suggestion], round_no: int) -> PlannerResponse:
+    spec = req.spec
+    unapplied: list[Suggestion] = []
+    for s in suggestions:
+        if s.id in req.accepted_suggestions:
+            spec, ok = apply_suggestion(spec, s)
+            if not ok:
+                unapplied.append(s)
+    remaining = [s for s in suggestions if s.id not in req.accepted_suggestions and s.id not in req.rejected_suggestions]
+    if not (req.feedback.strip() or req.answers or unapplied):
+        return _post_process(PlannerResponse(spec=spec, suggestions=remaining,
+                                             notes=f"Kolo {round_no}: návrhy aplikovány lokálně."), None)
+    prompt = (
+        "## Current spec (already edited by the user – keep their edits)\n"
+        + json.dumps(spec.model_dump(mode="json"), ensure_ascii=False)
+        + "\n\n## Module catalog\n" + json.dumps(catalog(), ensure_ascii=False)
+        + "\n\n## User feedback\n" + (req.feedback or "(none)")
+        + "\n\n## Answers to your questions\n" + json.dumps(req.answers, ensure_ascii=False)
+        + "\n\n## Accepted suggestions to incorporate\n"
+        + json.dumps([s.model_dump(mode="json") for s in unapplied], ensure_ascii=False)
+        + "\n\n## Rejected suggestions (do not propose again)\n" + json.dumps(req.rejected_suggestions)
+        + f"\n\nThis is re-planning round {round_no}. Return the updated PlannerResponse."
+    )
+    resp = await get_llm().structured(role="strong", task="replan_spec", prompt=prompt, schema=PlannerResponse,
+                                      system=SYSTEM, mock_context={"spec": spec.model_dump(mode="json"),
+                                                                   "feedback": req.feedback, "answers": req.answers})
+    return _post_process(resp, None)
+
+
+# --------------------------------------------------------------------------- generation plan
+PLAN_SYSTEM = """You turn an approved ScenarioSpec into a GenerationPlan: work packages per table (or group of tables)
+with the generation strategy, dependencies (FK parents first) and batch sizes. Use strategy "simulation" with the
+module id for all tables owned by the scenario module (one package), "llm_dimension" for master data and "llm_rows"
+for other tables. Never let the LLM generate transactional rows of a simulated table. Keep instructions short."""
+
+
+def default_plan(spec: ScenarioSpec) -> GenerationPlan:
+    module = get_module(spec.meta.archetype)
+    pkgs: list[WorkPackage] = []
+    owned: set[str] = set()
+    if module:
+        dims = [t for t in module.dimension_tables() if spec.table(t)]
+        sims = [t.name for t in module.tables() if t.strategy == "simulation"]
+        pkgs.append(WorkPackage(id="dimensions", tables=dims, strategy="llm_dimension", module=module.id,
+                                instructions="Master data via CHEAP model; structural attributes from seed."))
+        pkgs.append(WorkPackage(id="simulation", tables=sims, strategy="simulation", module=module.id,
+                                depends_on=["dimensions"],
+                                instructions="Causal simulation of the story mechanism."))
+        owned = set(dims) | set(sims)
+    order = spec.topological_order()
+    for name in order:
+        if name in owned:
+            continue
+        t = spec.table(name)
+        deps = set()
+        for c in t.columns:
+            if c.fk:
+                rt = c.fk.split(".")[0]
+                if rt in owned:
+                    deps.add("simulation" if module and rt not in module.dimension_tables() else "dimensions")
+                elif rt != name:
+                    deps.add(f"t_{rt}")
+        pkgs.append(WorkPackage(id=f"t_{name}", tables=[name], strategy=t.strategy if t.strategy != "simulation" else "llm_rows",
+                                depends_on=sorted(deps), batch_size=40 if t.strategy == "llm_dimension" else 25))
+    return GenerationPlan(work_packages=pkgs, notes="Deterministický plán odvozený ze specifikace.")
+
+
+def check_plan(plan: GenerationPlan, spec: ScenarioSpec) -> list[str]:
+    errs: list[str] = []
+    module = get_module(spec.meta.archetype)
+    covered: dict[str, str] = {}
+    ids = {p.id for p in plan.work_packages}
+    for p in plan.work_packages:
+        for t in p.tables:
+            if not spec.table(t):
+                errs.append(f"{p.id}: unknown table {t}")
+            if t in covered:
+                errs.append(f"table {t} in two packages")
+            covered[t] = p.id
+        for d in p.depends_on:
+            if d not in ids:
+                errs.append(f"{p.id}: unknown dependency {d}")
+        if p.strategy == "simulation" and (not module or p.module != module.id):
+            errs.append(f"{p.id}: simulation requires module {spec.meta.archetype}")
+        if module and any(t in module.dimension_tables() for t in p.tables) and p.module != module.id:
+            errs.append(f"{p.id}: module dimension tables must be generated by module {module.id}")
+    for t in spec.tables:
+        if t.name not in covered:
+            errs.append(f"table {t.name} not covered")
+        if module and t.strategy == "simulation" and t.name in covered:
+            pk = next(p for p in plan.work_packages if p.id == covered[t.name])
+            if pk.strategy != "simulation":
+                errs.append(f"{t.name} is simulated but planned as {pk.strategy}")
+    # cycle check
+    deps = {p.id: set(p.depends_on) for p in plan.work_packages}
+    done: set[str] = set()
+    while deps:
+        ready = [k for k, v in deps.items() if v <= done]
+        if not ready:
+            errs.append("dependency cycle")
+            break
+        for k in ready:
+            done.add(k)
+            deps.pop(k)
+    return errs
+
+
+async def make_generation_plan(spec: ScenarioSpec) -> tuple[GenerationPlan, list[str]]:
+    """Ask STRONG for a plan; validate it; fall back to the deterministic plan if invalid."""
+    base = default_plan(spec)
+    prompt = (
+        "## Spec (tables & strategies)\n"
+        + json.dumps([{"name": t.name, "strategy": t.strategy, "row_count": t.row_count,
+                       "fks": [c.fk for c in t.columns if c.fk]} for t in spec.tables], ensure_ascii=False)
+        + f"\n\n## Archetype: {spec.meta.archetype}\n## Story\n{spec.story.logline}\n"
+        + "\n## Reference plan (valid; improve instructions/batching if useful, keep coverage)\n"
+        + base.model_dump_json()
+    )
+    warnings: list[str] = []
+    try:
+        plan = await get_llm().structured(role="strong", task="generation_plan", prompt=prompt, schema=GenerationPlan,
+                                          system=PLAN_SYSTEM, mock_context={"plan": base.model_dump(mode="json")})
+    except Exception as e:  # noqa: BLE001 – planning failure must not kill the run
+        warnings.append(f"STRONG plán selhal ({e}); použit deterministický plán.")
+        return base, warnings
+    errs = check_plan(plan, spec)
+    if errs:
+        warnings.append("Plán od STRONG modelu byl neplatný (" + "; ".join(errs[:5]) + "); použit deterministický plán.")
+        return base, warnings
+    return plan, warnings
