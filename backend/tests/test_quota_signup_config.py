@@ -179,3 +179,36 @@ def test_request_size_limit(auth_env, client):
     h = auth_env.headers(U, "u@example.com")
     r = client.post("/api/scm/import", json={"model": {"x": "y" * 5000}}, headers=h)
     assert r.status_code == 413
+
+
+def test_reinvite_existing_account_approves_and_sends_link(auth_env, client, monkeypatch):
+    """'Pozvat znovu' for an existing account: approve it and e-mail a password link (deleted-profile path not covered)."""
+    import dataclasses
+
+    from app import main
+    from app.auth import admin, deps
+    from app.storage.meta import get_meta
+
+    auth_env.settings(SIGNUP_MODE="invite_only")
+    admin_id, user_id = str(uuid.uuid4()), str(uuid.uuid4())
+    h_admin = auth_env.headers(admin_id, "boss@x.org")
+    client.get("/api/me", headers=h_admin)  # profile created (403 for now)
+    get_meta().update_profile(admin_id, {"role": "admin"})
+    deps._profiles.clear()
+    h_user = auth_env.headers(user_id, "Guest@X.org")
+    assert client.get("/api/runs", headers=h_user).status_code == 403  # invite_only, not approved
+
+    real = main.get_settings()
+    monkeypatch.setattr(main, "get_settings", lambda: dataclasses.replace(real, supabase_url="https://p.supabase.co"))
+    sent = []
+
+    def exists(email, redirect_to=""):
+        raise admin.UserExists(email)
+
+    monkeypatch.setattr(admin, "invite", exists)
+    monkeypatch.setattr(admin, "send_access_link", lambda email, redirect_to="": sent.append((email, redirect_to)))
+    r = client.post("/api/admin/invite", json={"email": "guest@x.org"}, headers={**h_admin, "Origin": "https://app.test"})
+    assert r.status_code == 200 and r.json()["resent"] is True
+    assert sent == [("guest@x.org", "https://app.test/auth/nastaveni-hesla")]
+    assert get_meta().get_profile(user_id)["approved"] is True
+    assert client.get("/api/runs", headers=h_user).status_code == 200

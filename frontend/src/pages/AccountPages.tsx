@@ -81,10 +81,19 @@ export function Admin() {
   const patch = async (id: string, p: Json) => {
     try { await api.adminUpdateUser(id, p); await load() } catch (e) { setErr(String(e)) }
   }
+  const sendInvite = async (to: string) => {
+    setMsg(null)
+    try {
+      const r = await api.adminInvite(to)
+      setMsg(r.resent ? `Účet ${to} už existoval – je schválený a dostal odkaz pro nastavení hesla.` : `Pozvánka odeslána na ${to}.`)
+      await load()
+    } catch (e2) { setMsg(String(e2)) }
+  }
   const invite = async (e: FormEvent) => {
     e.preventDefault()
     setMsg(null)
-    try { await api.adminInvite(email); setMsg(`Pozvánka odeslána na ${email}.`); setEmail(''); await load() } catch (e2) { setMsg(String(e2)) }
+    await sendInvite(email)
+    setEmail('')
   }
   if (err) return <div className="text-red-700">{err}</div>
   if (!data) return <div className="text-slate-500">Načítám uživatele…</div>
@@ -117,6 +126,7 @@ export function Admin() {
                 {u.status === 'blocked'
                   ? <button className="btn text-xs" onClick={() => void patch(u.id, { status: 'active' })}>Odblokovat</button>
                   : <button className="btn btn-danger text-xs" onClick={() => { if (confirm(`Zablokovat ${u.email}?`)) void patch(u.id, { status: 'blocked' }) }}>Zablokovat</button>}
+                <button className="btn text-xs" title="Schválí účet a pošle odkaz pro nastavení hesla" onClick={() => void sendInvite(u.email)}>Pozvat znovu</button>
                 {u.role !== 'admin' && <button className="btn text-xs" onClick={() => { if (confirm(`Udělat ${u.email} správcem?`)) void patch(u.id, { role: 'admin' }) }}>Správce</button>}
               </td>
             </tr>))}</tbody>

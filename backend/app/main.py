@@ -1137,9 +1137,49 @@ def admin_update_user(uid: str, body: AdminUserPatch, admin: Principal = Depends
 def admin_invite(body: InviteRequest, request: Request, admin: Principal = Depends(require_admin)) -> dict:
     if not get_settings().use_supabase:
         raise HTTPException(400, "Pozvánky vyžadují Supabase Auth.")
-    from .auth.admin import invite
+    from .auth.admin import UserExists, invite, send_access_link
+    email = body.email.strip().lower()
     origin = request.headers.get("origin") or ""
-    return invite(body.email.strip().lower(), redirect_to=f"{origin}/auth/nastaveni-hesla" if origin else "")
+    redirect = f"{origin}/auth/nastaveni-hesla" if origin else ""
+    try:
+        return invite(email, redirect_to=redirect)
+    except UserExists:
+        # re-invite: approve the existing account (recreating a missing profile) and send a password link
+        meta = get_meta()
+        p = next((x for x in meta.list_profiles() if (x.get("email") or "").lower() == email), None)
+        if p is None:
+            uid = _auth_user_id(email)
+            if uid:
+                p = meta.ensure_profile(uid, email)
+        if p is not None:
+            meta.update_profile(p["id"], {"approved": True, "status": "active"})
+            invalidate_profile(p["id"])
+        send_access_link(email, redirect_to=redirect)
+        return {"invited": email, "resent": True}
+
+
+def _auth_user_id(email: str) -> Optional[str]:
+    """Look up an auth user id by e-mail through the Auth Admin API (secret key)."""
+    import httpx
+
+    s = get_settings()
+    key = s.supabase_secret_key
+    headers = {"apikey": key, **({} if key.startswith("sb_") else {"Authorization": f"Bearer {key}"})}
+    try:
+        for page in range(1, 11):
+            r = httpx.get(f"{s.supabase_url}/auth/v1/admin/users", params={"page": page, "per_page": 200},
+                          headers=headers, timeout=15)
+            if r.status_code >= 400:
+                return None
+            users = r.json().get("users", [])
+            for u in users:
+                if (u.get("email") or "").lower() == email:
+                    return u["id"]
+            if len(users) < 200:
+                return None
+    except httpx.HTTPError:
+        return None
+    return None
 
 
 @app.post("/api/admin/runs/{run_id}/preset")

@@ -12,6 +12,25 @@ log = logging.getLogger("auth.admin")
 BAN_FOREVER = "876000h"  # ~100 years
 
 
+class UserExists(Exception):
+    pass
+
+
+def send_access_link(email: str, redirect_to: str = "") -> None:
+    """Existing account: e-mail a link to (re)set the password (Supabase 'recover' flow)."""
+    params = {"redirect_to": redirect_to} if redirect_to else None
+    try:
+        r = httpx.post(_url("/recover"), json={"email": email}, params=params, headers=_headers(), timeout=15)
+    except httpx.HTTPError as e:
+        log.error("recover failed: %s", e)
+        raise HTTPException(503, "Odkaz se nepodařilo odeslat.")
+    if r.status_code == 429:
+        raise HTTPException(429, "Supabase omezuje počet e-mailů – zkuste to za pár minut.")
+    if r.status_code >= 400:
+        log.error("recover -> %s %s", r.status_code, r.text[:300])
+        raise HTTPException(502, "Odkaz se nepodařilo odeslat.")
+
+
 def _headers() -> dict[str, str]:
     key = get_settings().supabase_secret_key
     h = {"apikey": key, "Content-Type": "application/json"}
@@ -32,8 +51,8 @@ def invite(email: str, redirect_to: str = "") -> dict:
     except httpx.HTTPError as e:
         log.error("invite failed: %s", e)
         raise HTTPException(503, "Pozvánku se nepodařilo odeslat.")
-    if r.status_code == 422:
-        raise HTTPException(409, "Uživatel s tímto e-mailem už existuje – schvalte ho v přehledu uživatelů.")
+    if r.status_code == 422:  # account already exists -> caller re-sends access instead
+        raise UserExists(email)
     if r.status_code >= 400:
         log.error("invite -> %s %s", r.status_code, r.text[:300])
         raise HTTPException(502, "Pozvánku se nepodařilo odeslat.")
