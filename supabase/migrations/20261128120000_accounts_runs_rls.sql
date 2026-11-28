@@ -118,6 +118,7 @@ create table public.jobs (
   error text,
   cancel_requested boolean not null default false,
   lease_until timestamptz,
+  lease_holder text,
   attempts integer not null default 0,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()

@@ -5,6 +5,7 @@ import asyncio
 import datetime as dt
 import json
 import logging
+import time
 from typing import Any, Optional
 
 import pandas as pd
@@ -147,10 +148,101 @@ def _score(ev: dict[str, Any]) -> tuple[int, int]:
     return VERDICT_RANK[ev["verdict"]["verdict"]], ev["checks_summary"]["errors"]
 
 
-async def execute_run(req: RunRequest, job: Job, base_params: dict[str, Any] | None = None) -> dict[str, Any]:
-    if req.spec.scm is not None:  # executable structural causal model -> generic causal engine
+# =========================================================================== staged execution
+# Each stage is one short, idempotent request (see jobs.py). Between stages the generator state is
+# persisted in the run's private directory and the small bookkeeping in ``job.state``.
+GEN_STATE = "private/_gen_state.pkl.gz"
+GEN_BEST = "private/_gen_best.pkl.gz"
+EV_FILE = "private/_ev.json"
+EV_BEST = "private/_ev_best.json"
+_LIVE: dict[str, tuple[int, "Generator"]] = {}  # run_id -> (attempt marker, generator) in this process
+
+
+def _req(job: Job) -> RunRequest:
+    return RunRequest.model_validate(job.state["request"])
+
+
+def _run_doc(run_id: str) -> dict[str, Any]:
+    return store.load_run(run_id) or {}
+
+
+def _save_gen(run_id: str, gen: "Generator", ctx: GenContext, name: str = GEN_STATE) -> None:
+    import gzip
+    import pickle
+
+    p = store.run_path(run_id) / name
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(p.name + ".tmp")
+    # Written and read only by the backend: users have no write access to run storage.
+    with gzip.open(tmp, "wb", compresslevel=3) as f:
+        pickle.dump({"dims": gen.dims, "tables": gen.tables, "manifest": gen.manifest, "stats": gen.stats,
+                     "params": ctx.params, "notes": ctx.notes}, f, protocol=pickle.HIGHEST_PROTOCOL)
+    tmp.replace(p)
+
+
+def _load_gen(job: Job, spec: ScenarioSpec, name: str = GEN_STATE) -> tuple["Generator", GenContext]:
+    import gzip
+    import pickle
+
+    run_id = job.state["run_id"]
+    module = get_module(spec.meta.archetype)
+    plan = GenerationPlan.model_validate(job.state["plan"])
+    ctx = GenContext(seed=spec.meta.seed, knobs=job.state["knobs"], params=dict(job.state.get("base_params") or {}),
+                     progress=lambda m, f: job.emit("", m, f))
+    gen = Generator(spec, plan, ctx, module, job)
+    live = _LIVE.get(run_id)
+    if name == GEN_STATE and live and live[0] == job.state.get("gen_version"):
+        src = live[1]
+        gen.dims, gen.tables, gen.manifest, gen.stats = src.dims, src.tables, src.manifest, src.stats
+        ctx.params, ctx.notes = dict(src.ctx.params), dict(src.ctx.notes)
+        return gen, ctx
+    p = store.run_path(run_id) / name
+    if p.exists():
+        with gzip.open(p, "rb") as f:
+            d = pickle.load(f)  # noqa: S301 – trusted, backend-written file
+        gen.dims, gen.tables, gen.manifest, gen.stats = d["dims"], d["tables"], d["manifest"], d["stats"]
+        ctx.params, ctx.notes = d["params"], d["notes"]
+    return gen, ctx
+
+
+def _remember_gen(job: Job, gen: "Generator", ctx: GenContext) -> None:
+    job.state["gen_version"] = job.state.get("gen_version", 0) + 1
+    _save_gen(job.state["run_id"], gen, ctx)
+    _LIVE[job.state["run_id"]] = (job.state["gen_version"], gen)
+    while len(_LIVE) > 2:
+        _LIVE.pop(next(iter(_LIVE)))
+
+
+def _stage_spec(job: Job) -> tuple[ScenarioSpec, Optional[ScenarioModule]]:
+    spec = ScenarioSpec.model_validate(job.state["spec"])
+    return spec, get_module(spec.meta.archetype)
+
+
+def _write_json(run_id: str, name: str, data: Any) -> None:
+    p = store.run_path(run_id) / name
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(data, ensure_ascii=False, default=store._json_default), encoding="utf-8")
+
+
+def _read_json(run_id: str, name: str) -> Any:
+    p = store.run_path(run_id) / name
+    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
+
+
+def _append_calls(job: Job, tracker: UsageTracker) -> None:
+    job.state.setdefault("calls", []).extend(tracker.records())
+    if tracker.responses:
+        with open(store.run_path(job.state["run_id"]) / "llm_calls.jsonl", "a", encoding="utf-8") as f:
+            for key, resp in tracker.responses.items():
+                f.write(json.dumps({"cache_key": key, "response": resp}, ensure_ascii=False) + "\n")
+
+
+async def stage_plan(job: Job) -> Optional[str]:
+    req = _req(job)
+    if req.spec.scm is not None:  # executable structural causal model -> generic causal engine (one stage)
         from .causal.service import execute_causal_run
-        return await execute_causal_run(req, job)
+        job.result = await execute_causal_run(req, job)
+        return None
     settings = get_settings()
     spec = req.spec
     module = get_module(spec.meta.archetype)
@@ -162,8 +254,9 @@ async def execute_run(req: RunRequest, job: Job, base_params: dict[str, Any] | N
     if errs:
         raise ValueError("Specifikace není generovatelná: " + "; ".join(errs))
     knobs = spec.knob_values(req.knob_overrides)
-    run_id = store.new_run_id()
-    tracker = UsageTracker()
+    run_id = job.state.get("run_id") or store.new_run_id()
+    job.run_id = run_id
+    job.touch(run_id)
     run: dict[str, Any] = {
         "run_id": run_id, "label": req.label or ("What-if" if req.parent_run_id else "Běh"),
         "name": spec.meta.name, "created_at": dt.datetime.now().isoformat(timespec="seconds"), "status": "running",
@@ -173,65 +266,117 @@ async def execute_run(req: RunRequest, job: Job, base_params: dict[str, Any] | N
         "job_id": job.id,
     }
     store.save_json(run_id, "run.json", run)
+    (store.run_path(run_id) / "llm_calls.jsonl").write_text("", encoding="utf-8")
     job.emit("plan", f"Běh {run_id}", 0.01, run_id=run_id)
-    t0 = dt.datetime.now()
-
+    tracker = UsageTracker()
     with usage_scope(tracker):
         job.emit("plan", "STRONG model sestavuje GenerationPlan", 0.02)
         plan, w = await make_generation_plan(spec)
-        warnings += w
-        for wmsg in w:
-            job.emit("plan", wmsg)
-        job.emit("plan", "Plán: " + ", ".join(f"{p.id}[{p.strategy}]" for p in plan.work_packages), 0.04)
-        ctx = GenContext(seed=spec.meta.seed, knobs=knobs, params=dict(base_params or {}),
-                         progress=lambda m, f: job.emit("", m, f))
-        gen = Generator(spec, plan, ctx, module, job)
+    warnings += w
+    for wmsg in w:
+        job.emit("plan", wmsg)
+    job.emit("plan", "Plán: " + ", ".join(f"{p.id}[{p.strategy}]" for p in plan.work_packages), 0.04)
+    job.state.update(run_id=run_id, spec=spec.model_dump(mode="json"), knobs=knobs, warnings=warnings,
+                     plan=plan.model_dump(mode="json"), t0=time.time(), calls=[], history=[], iteration=0)
+    _append_calls(job, tracker)
+    return "generate"
+
+
+async def stage_generate(job: Job) -> Optional[str]:
+    spec, _ = _stage_spec(job)
+    job.touch(job.state["run_id"])
+    gen, ctx = _load_gen(job, spec, name="__none__")  # fresh generator (idempotent re-run)
+    tracker = UsageTracker()
+    with usage_scope(tracker):
         await gen.run()
-        ev = await _evaluate(run_id, spec, gen, knobs, job)
+    _remember_gen(job, gen, ctx)
+    _append_calls(job, tracker)
+    return "evaluate"
 
-        history = [{"iteration": 0, "verdict": ev["verdict"]["verdict"], "errors": ev["checks_summary"]["errors"],
-                    "actions": []}]
-        best = (ev, dict(gen.tables), dict(gen.manifest), dict(ctx.params))
-        if req.repair:
-            for it in range(1, MAX_REPAIR_ITERATIONS + 1):
-                if ev["verdict"]["verdict"] == "pass" and not ev["checks_summary"]["errors"]:
-                    break
-                actions = _repair_actions(ev, spec, module)
-                if not actions:
-                    break
-                job.emit("repair", f"Repair iterace {it}: " + "; ".join(
-                    f"{a['action']} {a.get('table') or a.get('param')}" for a in actions), 0.9)
-                only: set[str] = set()
-                rebuild_dims = resim = False
-                for a in actions:
-                    if a["action"] == "adjust_param":
-                        ctx.params[a["param"]] = a["value"]
-                        resim = True
-                    else:
-                        ctx.notes[a["table"]] = a["instructions"]
-                        if module and a["table"] in module.dimension_tables():
-                            rebuild_dims = True
-                        else:
-                            only.add(a["table"])
-                            # dependants of a regenerated table must be regenerated too (FK values change)
-                            only |= {t.name for t in spec.tables
-                                     if any(c.fk and c.fk.startswith(a["table"] + ".") for c in t.columns)
-                                     and t.strategy != "simulation"}
-                await gen.run(only=only, rebuild_dims=rebuild_dims, resimulate=resim)
-                ev = await _evaluate(run_id, spec, gen, knobs, job)
-                history.append({"iteration": it, "verdict": ev["verdict"]["verdict"],
-                                "errors": ev["checks_summary"]["errors"], "actions": actions})
-                if _score(ev) <= _score(best[0]):
-                    best = (ev, dict(gen.tables), dict(gen.manifest), dict(ctx.params))
-            if best[0] is not ev:
-                job.emit("repair", "Vracím nejlepší iteraci")
-                gen.tables, gen.manifest = best[1], best[2]
-                ctx.params = best[3]
-                ev = await _evaluate(run_id, spec, gen, knobs, job, use_llm=False)
-                ev["verdict"] = best[0]["verdict"]
 
-        job.emit("dashboard", "Validuji a vykresluji dashboard", 0.96)
-        db = store.db_path(run_id)
+async def stage_evaluate(job: Job) -> Optional[str]:
+    spec, _ = _stage_spec(job)
+    run_id = job.state["run_id"]
+    job.touch(run_id)
+    gen, ctx = _load_gen(job, spec)
+    tracker = UsageTracker()
+    with usage_scope(tracker):
+        ev = await _evaluate(run_id, spec, gen, job.state["knobs"], job)
+    _write_json(run_id, EV_FILE, ev)
+    _write_json(run_id, EV_BEST, ev)
+    _save_gen(run_id, gen, ctx, GEN_BEST)
+    job.state.update(history=[{"iteration": 0, "verdict": ev["verdict"]["verdict"],
+                               "errors": ev["checks_summary"]["errors"], "actions": []}],
+                     iteration=0, best_iteration=0, best_score=list(_score(ev)))
+    _append_calls(job, tracker)
+    return "repair" if _req(job).repair else "finalize"
+
+
+async def stage_repair(job: Job) -> Optional[str]:
+    spec, module = _stage_spec(job)
+    run_id = job.state["run_id"]
+    job.touch(run_id)
+    it = int(job.state.get("iteration", 0)) + 1
+    ev = _read_json(run_id, EV_FILE)
+    if it > MAX_REPAIR_ITERATIONS or (ev["verdict"]["verdict"] == "pass" and not ev["checks_summary"]["errors"]):
+        return "finalize"
+    actions = _repair_actions(ev, spec, module)
+    if not actions:
+        return "finalize"
+    job.emit("repair", f"Repair iterace {it}: " + "; ".join(
+        f"{a['action']} {a.get('table') or a.get('param')}" for a in actions), 0.9)
+    gen, ctx = _load_gen(job, spec)
+    only: set[str] = set()
+    rebuild_dims = resim = False
+    for a in actions:
+        if a["action"] == "adjust_param":
+            ctx.params[a["param"]] = a["value"]
+            resim = True
+        else:
+            ctx.notes[a["table"]] = a["instructions"]
+            if module and a["table"] in module.dimension_tables():
+                rebuild_dims = True
+            else:
+                only.add(a["table"])
+                # dependants of a regenerated table must be regenerated too (FK values change)
+                only |= {t.name for t in spec.tables
+                         if any(c.fk and c.fk.startswith(a["table"] + ".") for c in t.columns)
+                         and t.strategy != "simulation"}
+    tracker = UsageTracker()
+    with usage_scope(tracker):
+        await gen.run(only=only, rebuild_dims=rebuild_dims, resimulate=resim)
+        ev = await _evaluate(run_id, spec, gen, job.state["knobs"], job)
+    job.state["history"].append({"iteration": it, "verdict": ev["verdict"]["verdict"],
+                                 "errors": ev["checks_summary"]["errors"], "actions": actions})
+    _write_json(run_id, EV_FILE, ev)
+    if list(_score(ev)) <= job.state["best_score"]:
+        job.state.update(best_iteration=it, best_score=list(_score(ev)))
+        _write_json(run_id, EV_BEST, ev)
+        _save_gen(run_id, gen, ctx, GEN_BEST)
+    job.state["iteration"] = it
+    _remember_gen(job, gen, ctx)
+    _append_calls(job, tracker)
+    return "repair"
+
+
+async def stage_finalize(job: Job) -> Optional[str]:
+    spec, _ = _stage_spec(job)
+    run_id = job.state["run_id"]
+    job.touch(run_id)
+    knobs = job.state["knobs"]
+    ev = _read_json(run_id, EV_FILE)
+    if job.state.get("best_iteration", 0) != job.state.get("iteration", 0):
+        job.emit("repair", "Vracím nejlepší iteraci")
+        best_ev = _read_json(run_id, EV_BEST)
+        gen, ctx = _load_gen(job, spec, GEN_BEST)
+        ev = await _evaluate(run_id, spec, gen, knobs, job, use_llm=False)
+        ev["verdict"] = best_ev["verdict"]
+    else:
+        gen, ctx = _load_gen(job, spec)
+    tracker = UsageTracker()
+    job.emit("dashboard", "Validuji a vykresluji dashboard", 0.96)
+    db = store.db_path(run_id)
+    with usage_scope(tracker):
         widgets, werrs = await asyncio.to_thread(validate_widgets, db, spec.dashboard, knobs, spec.meta.model_dump())
         dash_source = "spec"
         if len(widgets) < 2:
@@ -239,16 +384,18 @@ async def execute_run(req: RunRequest, job: Job, base_params: dict[str, Any] | N
                                                        spec.meta.model_dump())
             werrs += werrs2
             dash_source = "fallback"
-
+    _append_calls(job, tracker)
+    all_calls = UsageTracker.from_records(job.state.get("calls", []))
     row_counts = {k: int(len(v)) for k, v in gen.tables.items() if not k.startswith("_")}
+    run = _run_doc(run_id)
     run.update({
-        "status": "done", "plan": plan.model_dump(), "warnings": warnings, "verdict": ev["verdict"],
-        "validator": ev["validator"], "checks_summary": ev["checks_summary"], "signals": ev["signals"],
-        "repair_history": history, "row_counts": row_counts, "params": ctx.params,
-        "generation_stats": gen.stats, "usage": tracker.summary(),
+        "status": "done", "plan": job.state["plan"], "warnings": job.state.get("warnings", []),
+        "verdict": ev["verdict"], "validator": ev["validator"], "checks_summary": ev["checks_summary"],
+        "signals": ev["signals"], "repair_history": job.state.get("history", []), "row_counts": row_counts,
+        "params": ctx.params, "generation_stats": gen.stats, "usage": all_calls.summary(),
         "dashboard": {"source": dash_source, "errors": werrs, "title": spec.dashboard.title},
-        "duration_s": round((dt.datetime.now() - t0).total_seconds(), 1),
-        "llm_calls": tracker.records(),
+        "duration_s": round(time.time() - float(job.state.get("t0") or time.time()), 1),
+        "llm_calls": all_calls.records(),
     })
     store.save_json(run_id, "run.json", run)
     store.save_json(run_id, "checks.json", ev["checks"])
@@ -256,10 +403,40 @@ async def execute_run(req: RunRequest, job: Job, base_params: dict[str, Any] | N
     store.save_json(run_id, "profile.json", ev["profile"])
     store.save_json(run_id, "dashboard.json", widgets)
     store.save_json(run_id, "manifest.json", gen.manifest)
-    with open(store.run_path(run_id) / "llm_calls.jsonl", "w", encoding="utf-8") as f:
-        for key, resp in tracker.responses.items():
-            f.write(json.dumps({"cache_key": key, "response": resp}, ensure_ascii=False) + "\n")
-    u = tracker.summary()
+    _dedupe_calls(run_id)
+    for name in (GEN_STATE, GEN_BEST, EV_FILE, EV_BEST):
+        (store.run_path(run_id) / name).unlink(missing_ok=True)
+    _LIVE.pop(run_id, None)
+    u = all_calls.summary()
     job.emit("done", f"Hotovo: {sum(row_counts.values()):,} řádků v {len(row_counts)} tabulkách, "
                      f"{u['total_calls']} LLM volání, odhad ${u['total_cost_usd']:.4f}", 1.0, run_id=run_id)
-    return {"run_id": run_id}
+    job.result = {"run_id": run_id}
+    return None
+
+
+def _dedupe_calls(run_id: str) -> None:
+    p = store.run_path(run_id) / "llm_calls.jsonl"
+    if not p.exists():
+        return
+    seen: dict[str, str] = {}
+    for line in p.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            seen[json.loads(line)["cache_key"]] = line
+    p.write_text("".join(v + "\n" for v in seen.values()), encoding="utf-8")
+
+
+RUN_STAGES = {"plan": stage_plan, "generate": stage_generate, "evaluate": stage_evaluate, "repair": stage_repair,
+              "finalize": stage_finalize}
+
+
+def run_job_state(req: RunRequest, base_params: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {"request": req.model_dump(mode="json"), "base_params": base_params or {}}
+
+
+async def execute_run(req: RunRequest, job: Job, base_params: dict[str, Any] | None = None) -> dict[str, Any]:
+    """All stages in-process (scripts, tests). The API runs the same stages as a resumable job."""
+    job.state.update(run_job_state(req, base_params))
+    stage: Optional[str] = "plan"
+    while stage:
+        stage = await RUN_STAGES[stage](job)
+    return job.result

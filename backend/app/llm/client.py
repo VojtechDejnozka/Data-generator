@@ -60,11 +60,21 @@ class CallRecord:
 class UsageTracker:
     calls: list[CallRecord] = field(default_factory=list)
     responses: dict[str, Any] = field(default_factory=dict)  # cache_key -> raw JSON (for replay)
+    #: enclosing tracker (e.g. the job-level tracker used for quotas); every record propagates upwards
+    parent: Optional["UsageTracker"] = field(default=None, repr=False, compare=False)
 
     def add(self, rec: CallRecord, response: Any | None = None) -> None:
         self.calls.append(rec)
         if response is not None and rec.cache_key:
             self.responses[rec.cache_key] = response
+        if self.parent is not None:
+            self.parent.add(rec, None)
+
+    @classmethod
+    def from_records(cls, records: list[dict[str, Any]]) -> "UsageTracker":
+        t = cls()
+        t.calls = [CallRecord(**r) for r in records]
+        return t
 
     def summary(self) -> dict[str, Any]:
         by: dict[str, dict[str, Any]] = {}
@@ -89,12 +99,18 @@ class UsageTracker:
     def records(self) -> list[dict[str, Any]]:
         return [asdict(c) for c in self.calls]
 
+    def records_since(self, n: int) -> list[dict[str, Any]]:
+        return [asdict(c) for c in self.calls[n:]]
+
 
 _tracker: contextvars.ContextVar[Optional[UsageTracker]] = contextvars.ContextVar("usage_tracker", default=None)
 
 
 @contextlib.contextmanager
 def usage_scope(tracker: UsageTracker):
+    outer = _tracker.get()
+    if outer is not None and outer is not tracker and tracker.parent is None:
+        tracker.parent = outer
     token = _tracker.set(tracker)
     try:
         yield tracker
