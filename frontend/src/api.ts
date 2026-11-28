@@ -172,6 +172,7 @@ export const api = {
   llmCalls: (id: string) => req<Json[]>('GET', `/api/runs/${id}/llm-calls`),
   report: (id: string) => req<Json>('GET', `/api/runs/${id}/report`),
   dashboard: (id: string) => req<Json>('GET', `/api/runs/${id}/dashboard`),
+  startScmDashboard: (id: string) => req<{ job_id: string }>('POST', `/api/runs/${id}/dashboard`),
   groundTruth: (id: string) => req<Json>('GET', `/api/runs/${id}/ground-truth`),
   schema: (id: string) => req<Json>('GET', `/api/runs/${id}/schema`),
   table: (id: string, t: string, params: Record<string, string | number | boolean | undefined>) => {

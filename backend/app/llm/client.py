@@ -233,6 +233,7 @@ class LLMClient:
     async def _call_with_retries(self, role, task, prompt, schema, system, temperature, key, json_mode=False,
                                  max_validation_retries=None):
         from google.genai import errors, types
+        from httpx2 import TransportError
 
         schema_dict = gemini_schema(schema)
         errors_seen: list[str] = []
@@ -286,7 +287,7 @@ class LLMClient:
                         await asyncio.sleep(delay)
                         continue
                     break  # give up on this model
-                except (asyncio.TimeoutError, OSError) as e:  # network level
+                except (TransportError, asyncio.TimeoutError, OSError) as e:
                     errors_seen.append(f"{model}: {type(e).__name__} {e}")
                     if transport_attempt < MAX_TRANSPORT_ATTEMPTS - 1:
                         transport_attempt += 1

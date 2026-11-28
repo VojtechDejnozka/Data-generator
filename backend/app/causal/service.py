@@ -32,7 +32,7 @@ from typing import Any, Callable, Optional
 import pandas as pd
 
 from ..contracts.io import Issue, ObservationSettings, RunRequest, ValidationVerdict
-from ..llm.client import LLMError, UsageTracker, usage_scope
+from ..llm.client import LLMError, UsageTracker, get_llm, usage_scope
 from ..contracts.spec import Dashboard, ScenarioSpec, Widget
 from ..storage import runs as store
 from ..storage.text_files import read_saved_text
@@ -485,7 +485,26 @@ async def execute_causal_run(req: RunRequest, job) -> dict[str, Any]:
     checks = await asyncio.to_thread(run_checks, db, spec, {})
     summary = summarize(checks)
     evidence = await asyncio.to_thread(run_evidence, db, spec, {})
-    widgets, werrs = await asyncio.to_thread(validate_widgets, db, spec.dashboard, {}, spec.meta.model_dump())
+    tracker = UsageTracker()
+    widgets, werrs = [], []
+    dashboard = spec.dashboard
+    dash_source = "scm"
+    story = (req.input.story if req.input else "") or scm.meta.original_story
+    if not get_llm().mock:
+        from ..reporting.scm_dashboard import plan_scm_dashboard
+
+        job.emit("dashboard", "LLM navrhuje grafy podle původního příběhu", 0.76)
+        with usage_scope(tracker):
+            try:
+                proposed, widgets, werrs = await plan_scm_dashboard(spec, db, story)
+                if widgets:
+                    dashboard, dash_source = proposed, "llm"
+            except LLMError as exc:
+                werrs.append(str(exc))
+    if not widgets:
+        widgets, fallback_errors = await asyncio.to_thread(
+            validate_widgets, db, dashboard, {}, spec.meta.model_dump())
+        werrs += fallback_errors
     verdict = _verdict(gw.spec_report, gw.world_report, gw.manifest)
     status = gw.world_report.status if gw.spec_report.status != "FAIL" else "FAIL"
     observation = req.input.observation if req.input else None
@@ -493,10 +512,9 @@ async def execute_causal_run(req: RunRequest, job) -> dict[str, Any]:
         "status": "running" if observation else "done", "verdict": verdict.model_dump(),
         "validator": "scm-deterministic", "checks_summary": summary,
         "signals": [], "repair_history": [], "row_counts": meta["row_counts"], "params": {}, "warnings": scm.meta.warnings,
-        "generation_stats": {"timings": w.timings}, "usage": {"total_calls": 0, "total_cost_usd": 0, "total_tokens": 0,
-                                                              "by_model": []},
-        "dashboard": {"source": "scm", "errors": werrs, "title": spec.dashboard.title},
-        "duration_s": round((dt.datetime.now() - t0).total_seconds(), 1), "llm_calls": [],
+        "generation_stats": {"timings": w.timings}, "usage": tracker.summary(),
+        "dashboard": {"source": dash_source, "errors": werrs, "title": dashboard.title},
+        "duration_s": round((dt.datetime.now() - t0).total_seconds(), 1), "llm_calls": tracker.records(),
         "causal": {"status": status, "world_hash": w.world_hash, "spec_hash": w.spec_hash, "seed": w.seed,
                    "validation": {"spec": gw.spec_report.summary, "world": gw.world_report.summary},
                    "realized_story_facts": [{k: r[k] for k in ("fact_id", "realized")} for r in
@@ -521,6 +539,27 @@ async def execute_causal_run(req: RunRequest, job) -> dict[str, Any]:
         store.save_json(run_id, "run.json", run)
     job.emit("done", f"Hotovo: SCM svět {status}, {sum(meta['row_counts'].values()):,} řádků", 1.0, run_id=run_id)
     return {"run_id": run_id}
+
+
+async def refresh_scm_dashboard(run_id: str, job) -> dict[str, Any]:
+    from ..reporting.scm_dashboard import plan_scm_dashboard
+
+    scm, run = run_scm(run_id)
+    if get_llm().mock:
+        raise LLMError("Pro návrh dashboardu přes AI je potřeba aktivní připojení k LLM.")
+    story = (run.get("input") or {}).get("story") or scm.meta.original_story
+    job.emit("dashboard", "LLM navrhuje grafy podle původního příběhu", 0.1)
+    tracker = UsageTracker()
+    with usage_scope(tracker):
+        dashboard, widgets, errors = await plan_scm_dashboard(scenario_spec(scm), store.db_path(run_id), story, refresh=True)
+    if not widgets:
+        raise LLMError("LLM nenavrhlo žádný použitelný graf. " + " · ".join(errors))
+    meta = {"source": "llm", "errors": errors, "title": dashboard.title, "usage": tracker.summary()}
+    latest = store.load_run(run_id) or run
+    latest["dashboard"] = meta
+    store.save_json(run_id, "dashboard.json", widgets)
+    store.save_json(run_id, "run.json", latest)
+    return {"meta": meta, "widgets": widgets}
 
 
 def causal_summary(run_id: str) -> dict[str, Any]:

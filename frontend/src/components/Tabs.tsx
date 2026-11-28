@@ -5,9 +5,28 @@ import { api, fmt, watchJob, type Json, type JobEvent, type QueryResult } from '
 import Chart, { ResultTable } from './Chart'
 import JobProgress from './JobProgress'
 
-export function DashboardTab({ runId }: { runId: string }) {
+export function DashboardTab({ runId, canRefresh }: { runId: string; canRefresh: boolean }) {
   const [d, setD] = useState<Json>(null)
-  useEffect(() => { api.dashboard(runId).then(setD) }, [runId])
+  const [error, setError] = useState('')
+  const [running, setRunning] = useState(false)
+  useEffect(() => { api.dashboard(runId).then(setD).catch((e) => setError(String(e))) }, [runId])
+  const refresh = async () => {
+    setRunning(true)
+    setError('')
+    try {
+      const { job_id } = await api.startScmDashboard(runId)
+      watchJob(job_id, (event) => {
+        if (!event.final) return
+        setRunning(false)
+        if (event.status === 'error') setError(event.error || 'Dashboard se nepodařilo vytvořit.')
+        else setD(event.result)
+      })
+    } catch (e) {
+      setRunning(false)
+      setError(String(e))
+    }
+  }
+  if (!d && error) return <div className="text-red-700">{error}</div>
   if (!d) return <div className="text-slate-500">Načítám…</div>
   const kpis = d.widgets.filter((w: Json) => w.chart === 'kpi')
   const rest = d.widgets.filter((w: Json) => w.chart !== 'kpi')
@@ -15,8 +34,13 @@ export function DashboardTab({ runId }: { runId: string }) {
     <div className="space-y-4">
       <div className="flex items-center gap-2 text-sm">
         <h2 className="text-lg font-bold flex-1">{d.meta.title ?? 'Dashboard'}</h2>
-        <span className="chip bg-slate-100">zdroj: {d.meta.source === 'spec' ? 'návrh STRONG modelu (validováno)' : 'výchozí z důkazních dotazů'}</span>
+        <span className="chip bg-slate-100">zdroj: {['llm', 'spec'].includes(d.meta.source) ? 'návrh LLM (ověřené SQL)' : 'důkazní dotazy'}</span>
+        {canRefresh && <button className="btn" disabled={running} onClick={refresh}>
+          {running ? 'Navrhuji grafy…' : 'Navrhnout grafy přes AI'}
+        </button>}
       </div>
+      {error && <div role="alert" className="text-sm text-red-700">{error}</div>}
+      {d.widgets.length === 0 && <p className="text-sm text-slate-600">Pro tento běh zatím nejsou dostupné grafy.</p>}
       {d.meta.errors?.length > 0 && <div className="text-xs text-amber-800">Vyřazené widgety: {d.meta.errors.join('; ')}</div>}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {kpis.map((w: Json) => <div key={w.id} className="card p-4"><div className="text-xs text-slate-500">{w.title}</div><Chart spec={w} /></div>)}

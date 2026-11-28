@@ -253,6 +253,16 @@ def run_dashboard(run_id: str) -> dict:
     return {"meta": run.get("dashboard", {}), "widgets": store.load_json(run_id, "dashboard.json", [])}
 
 
+@app.post("/api/runs/{run_id}/dashboard")
+async def start_scm_dashboard(run_id: str) -> dict:
+    run = _run_or_404(run_id)
+    if run.get("engine") != "scm" or run.get("status") != "done":
+        raise HTTPException(409, "Dashboard přes AI lze vytvořit pro dokončený SCM běh.")
+    from .causal.service import refresh_scm_dashboard
+
+    return {"job_id": jobs.start("dashboard", lambda job: refresh_scm_dashboard(run_id, job)).id}
+
+
 @app.get("/api/runs/{run_id}/ground-truth")
 def run_ground_truth(run_id: str) -> dict:
     _run_or_404(run_id)
