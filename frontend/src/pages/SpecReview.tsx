@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { api, type Column, type Json, type PlannerResponse, type Spec, type Suggestion, type Table } from '../api'
 import JobProgress from '../components/JobProgress'
 import ScmPanel from '../components/ScmPanel'
+import RelationalSchema from '../components/RelationalSchema'
 import StoryTimeline from '../components/StoryTimeline'
 
 const STRATEGY: Record<string, [string, string]> = {
@@ -111,6 +112,7 @@ function TableRow({ t, steps, highlight, onChange, onRemove }: {
 export default function SpecReview() {
   const { sid } = useParams()
   const nav = useNavigate()
+  const { state } = useLocation()
   const [session, setSession] = useState<Json>(null)
   const [spec, setSpec] = useState<Spec | null>(null)
   const [answers, setAnswers] = useState<Record<string, string>>({})
@@ -143,7 +145,11 @@ export default function SpecReview() {
 
   if (loadError) return <div role="alert" className="text-red-700">{loadError}</div>
   if (!spec || !resp) return <div className="text-slate-500">Načítám návrh…</div>
-  if (spec.scm) return <ScmPanel key={sid} spec={spec} input={session.input} />
+  const runSearch = typeof state?.runSearch === 'string' && state.runSearch ? `?${state.runSearch}` : ''
+  const resultsUrl = session.parent_run_id ? `/runs/${session.parent_run_id}${runSearch}` : undefined
+  if (spec.scm) return <ScmPanel key={`${sid}:${session.round}`} spec={spec} input={session.input}
+    sessionId={session.session_id} round={session.round} parentRunId={session.parent_run_id} resultsUrl={resultsUrl}
+    notes={resp.notes} reload={load} />
 
   const meta = spec.meta
   const setMeta = (patch: Partial<Spec['meta']>) => setSpec({ ...spec, meta: { ...meta, ...patch } })
@@ -161,7 +167,7 @@ export default function SpecReview() {
       if (v.errors.length) { setErrors(v.errors); return }
       setErrors([])
       const knob_overrides = Object.fromEntries(final.knobs.map((k) => [k.name, k.default]))
-      const r = await api.startRun({ spec: final, knob_overrides, input: session.input, label: 'Běh ze schváleného specu' })
+      const r = await api.startRun({ spec: final, knob_overrides, input: session.input, parent_run_id: session.parent_run_id, label: 'Běh ze schváleného specu' })
       setJob({ id: r.job_id, kind: 'run' })
     } catch (e) { setErrors([String(e)]) } finally { setBusy(false) }
   }
@@ -236,6 +242,7 @@ export default function SpecReview() {
           </div>
           {tab && <div id="detail-panel" className="border-t border-slate-100 p-5 sm:p-6 space-y-5">
             {tab === 'tables' && <>
+              <RelationalSchema tables={spec.tables} />
               {GROUPS.map(([strategy, title]) => {
                 const rows = spec.tables.map((t, i) => [t, i] as const).filter(([t]) => t.strategy === strategy)
                 if (!rows.length) return null
@@ -338,6 +345,7 @@ export default function SpecReview() {
         <div className="p-5 space-y-2">
           <button className="btn btn-primary w-full justify-center py-2.5 text-base" disabled={busy} onClick={() => void approve()}>
             {busy ? 'Pracuji…' : 'Schválit a generovat data'}</button>
+          {resultsUrl && <Link className="btn w-full justify-center" to={resultsUrl}>Zpět k výsledkům bez generování</Link>}
           {accepted.length > 0 && <p className="text-xs text-slate-500">Přidá se {accepted.length} přijatých návrhů.</p>}
           {errors.length > 0 && <div role="alert" className="text-sm text-red-800">
             <p className="font-semibold">Návrh nelze spustit</p>

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api, type Json } from '../api'
 import JobProgress from '../components/JobProgress'
 
@@ -29,6 +29,12 @@ export default function DocSpecReview() {
   const setSec = (i: number, patch: Json) => set('sections', spec.sections.map((s: Json, j: number) => (j === i ? { ...s, ...patch } : s)))
   const story = spec.story
   const fromSource = !!spec.source_run_id
+  const sourceRunId = spec.source_run_id || session.input?.source_run_id
+  const sourceTable = spec.source_table || session.input?.source_table
+  const sourceUrl = sourceRunId ? `/runs/${sourceRunId}?${new URLSearchParams({
+    tab: 'files', ...(sourceTable ? { table: sourceTable } : {}),
+  })}` : null
+  const backToSource = sourceUrl && <Link className="btn" to={sourceUrl}>Zpět ke zdrojovému běhu</Link>
   const resp = session.response
 
   const approve = async () => {
@@ -42,7 +48,8 @@ export default function DocSpecReview() {
 
   if (job) {
     return (
-      <div className="max-w-4xl">
+      <div className="max-w-4xl space-y-4">
+        {backToSource}
         <JobProgress jobId={job.id} title={job.kind === 'run' ? 'Generuji dokumenty' : 'Přeplánování'}
           phases={job.kind === 'run' ? DOC_PHASES : [['plan', 'Přeplánování'], ['done', 'Hotovo']]}
           onDone={(r) => { if (job.kind === 'run') nav(`/docs/runs/${r.run_id}`); else { setJob(null); load() } }} />
@@ -51,7 +58,9 @@ export default function DocSpecReview() {
   }
 
   return (
-    <div className="grid lg:grid-cols-3 gap-6">
+    <div className="space-y-4">
+      {backToSource}
+      <div className="grid lg:grid-cols-3 gap-6">
       <div className="lg:col-span-2 space-y-5">
         <div className="card p-5 space-y-3">
           <div className="flex items-center gap-3"><h1 className="text-[28px] leading-tight font-semibold tracking-[-0.015em] flex-1">Review specifikace dokumentů</h1>
@@ -147,6 +156,7 @@ export default function DocSpecReview() {
           {err && <div className="text-xs text-red-700">{err}</div>}
         </div>
       </aside>
+      </div>
     </div>
   )
 }

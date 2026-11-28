@@ -1,9 +1,8 @@
-// Dashboard, SQL console, what-if, detective, ground truth and log tabs.
+// Dashboard, SQL console, detective, ground truth and log tabs.
 import { useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { api, fmt, watchJob, type Json, type JobEvent, type QueryResult } from '../api'
 import Chart, { ResultTable } from './Chart'
-import JobProgress from './JobProgress'
 
 export function DashboardTab({ runId, canRefresh }: { runId: string; canRefresh: boolean }) {
   const [d, setD] = useState<Json>(null)
@@ -32,23 +31,30 @@ export function DashboardTab({ runId, canRefresh }: { runId: string; canRefresh:
   const rest = d.widgets.filter((w: Json) => w.chart !== 'kpi')
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-2 text-sm">
+      <div className="flex flex-wrap items-center gap-2 text-sm">
         <h2 className="text-lg font-bold flex-1">{d.meta.title ?? 'Dashboard'}</h2>
-        <span className="chip bg-slate-100">zdroj: {d.meta.source === 'scm' ? 'kauzální model' : d.meta.source === 'spec' ? 'návrh STRONG modelu (validováno)' : 'výchozí z důkazních dotazů'}</span>
+        <span className="chip bg-slate-100">{['llm', 'spec'].includes(d.meta.source) ? 'Návrh LLM · ověřené SQL' : 'Důkazní dotazy'}</span>
+        {canRefresh && <button className="btn" disabled={running} onClick={() => void refresh()}>
+          {running ? 'Navrhuji grafy…' : 'Navrhnout grafy přes AI'}
+        </button>}
       </div>
       {error && <div role="alert" className="text-sm text-red-700">{error}</div>}
       {d.widgets.length === 0 && <p className="text-sm text-slate-600">Pro tento běh zatím nejsou dostupné grafy.</p>}
       {d.meta.errors?.length > 0 && <div className="text-xs text-amber-800">Vyřazené widgety: {d.meta.errors.join('; ')}</div>}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        {kpis.map((w: Json) => <div key={w.id} className="card p-4"><div className="text-xs text-slate-500">{w.title}</div><Chart spec={w} /></div>)}
-      </div>
+      {kpis.length > 0 && <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {kpis.map((w: Json) => <article key={w.id} className="card p-4">
+          <h3 className="text-sm font-medium">{w.title}</h3>
+          <Chart spec={w} />
+          {w.description && <p className="text-xs leading-relaxed text-slate-600">{w.description}</p>}
+        </article>)}
+      </div>}
       <div className="grid lg:grid-cols-2 gap-4">
         {rest.map((w: Json) => (
-          <div key={w.id} className={`card p-4 ${w.width === 2 ? 'lg:col-span-2' : ''}`}>
-            <div className="font-medium text-sm mb-1">{w.title}</div>
-            {w.description && <div className="text-xs text-slate-500">{w.description}</div>}
-            <Chart spec={w} height={w.chart === 'heatmap' ? 320 : 280} />
-          </div>
+          <article key={w.id} className={`card min-w-0 p-4 space-y-2 ${w.width === 2 ? 'lg:col-span-2' : ''}`}>
+            <h3 className="font-semibold text-base">{w.title}</h3>
+            {w.description && <p className="text-sm leading-relaxed text-slate-600">{w.description}</p>}
+            <Chart spec={w} height={w.chart === 'heatmap' ? 360 : w.width === 2 ? 320 : 280} />
+          </article>
         ))}
       </div>
     </div>
@@ -83,56 +89,6 @@ export function SqlTab({ runId, initial }: { runId: string; initial: string }) {
   )
 }
 
-export function WhatIfTab({ run }: { run: Json }) {
-  const knobs = run.spec.knobs as Json[]
-  const [vals, setVals] = useState<Record<string, string>>(Object.fromEntries(knobs.map((k) => [k.name, String(run.knob_values[k.name])])))
-  const [job, setJob] = useState<string | null>(null)
-  const [err, setErr] = useState<string | null>(null)
-  const nav = useNavigate()
-  const changed = Object.fromEntries(Object.entries(vals).filter(([k, v]) => String(run.knob_values[k]) !== v))
-  const start = async (overrides: Record<string, string>, label = '') => {
-    setErr(null)
-    try { setJob((await api.whatif(run.run_id, overrides, label)).job_id) } catch (e) { setErr(String(e)) }
-  }
-  const sev = Number(run.knob_values.delay_severity ?? 6)
-  const presets: [string, Record<string, string>][] = [
-    ['Baseline bez příběhu (intenzita 0)', { story_intensity: '0' }],
-    [`Silnější zpoždění (${sev} → ${Math.min(15, sev * 2)} dní)`, { delay_severity: String(Math.min(15, sev * 2)) }],
-    ['Skokový náběh (step)', { ramp_profile: 'step' }],
-    ['Jiný dodavatel (ID 5)', { supplier_id: '5' }],
-  ]
-  if (job) return <JobProgress jobId={job} title="What-if regenerace (stejný seed)" onDone={(r) => nav(`/compare?a=${run.run_id}&b=${r.run_id}`)} />
-  return (
-    <div className="grid lg:grid-cols-3 gap-4">
-      <div className="card p-4 lg:col-span-2">
-        <h3 className="font-semibold mb-1">4 · Změna parametrů scénáře</h3>
-        <p className="text-sm text-slate-600 mb-3">Regenerace proběhne se stejným seedem a stejnými master daty. Poptávka (návštěvy a nákupní záměry) se vzorkuje nezávisle na zásobách, takže rozdíl mezi běhy vzniká jen změněným mechanismem.</p>
-        <div className="grid md:grid-cols-2 gap-3">
-          {knobs.map((k) => (
-            <div key={k.name}>
-              <label className="label">{k.label || k.name} {String(run.knob_values[k.name]) !== vals[k.name] && <span className="text-blue-700">• změněno</span>}</label>
-              {k.type === 'enum' ? (
-                <select className="input" value={vals[k.name]} onChange={(e) => setVals({ ...vals, [k.name]: e.target.value })}>{k.options.map((o: string) => <option key={o}>{o}</option>)}</select>
-              ) : k.type === 'bool' ? (
-                <select className="input" value={vals[k.name]} onChange={(e) => setVals({ ...vals, [k.name]: e.target.value })}><option value="true">ano</option><option value="false">ne</option></select>
-              ) : (
-                <input className="input" type={k.type === 'date' ? 'date' : 'number'} step={k.type === 'float' ? 0.1 : 1} min={k.min ?? undefined} max={k.max ?? undefined}
-                  value={vals[k.name]} onChange={(e) => setVals({ ...vals, [k.name]: e.target.value })} />
-              )}
-            </div>
-          ))}
-        </div>
-        {err && <div className="text-red-700 text-sm mt-2">{err}</div>}
-        <button className="btn btn-primary mt-4" disabled={!Object.keys(changed).length} onClick={() => start(changed)}>Regenerovat a porovnat ({Object.keys(changed).length} změn)</button>
-      </div>
-      <div className="card p-4 space-y-2">
-        <h3 className="font-semibold">Rychlé scénáře</h3>
-        {presets.map(([label, o]) => <button key={label} className="btn w-full justify-start" onClick={() => start(o, label)}>{label}</button>)}
-      </div>
-    </div>
-  )
-}
-
 export function DetectiveTab({ runId }: { runId: string }) {
   const [result, setResult] = useState<Json>(null)
   const [live, setLive] = useState<JobEvent[]>([])
@@ -158,7 +114,7 @@ export function DetectiveTab({ runId }: { runId: string }) {
       <div className="card p-4 flex items-start gap-4">
         <div className="flex-1">
           <h3 className="font-semibold">Detektiv – slepý AI analytik</h3>
-          <p className="text-sm text-slate-600">Agent dostane jen schéma databáze (bez popisů, specifikace, příběhu i knobů) a otázku „proč klesají tržby?“. Přes read-only SQL nástroj sám hledá příčinu. Výsledek se porovná se skrytým ground truth – silný důkaz, že příběh je v datech skutečně dohledatelný.</p>
+          <p className="text-sm text-slate-600">Detektiv pracuje se schématem a pozorovanými daty. U SCM seřadí možné příčiny pomocí statistických testů a porovnání s kontrolními skupinami. Závěr se hodnotí proti skrytému ground truth.</p>
         </div>
         <button className="btn btn-primary" disabled={running} onClick={start}>{running ? 'Vyšetřuje…' : result ? '↻ Spustit znovu' : '🔎 Spustit detektiva'}</button>
       </div>
@@ -174,6 +130,11 @@ export function DetectiveTab({ runId }: { runId: string }) {
               <span className={`chip border text-sm ${result.score.score >= 80 ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-amber-50 text-amber-800 border-amber-200'}`}>shoda s ground truth: {result.score.score} %</span>
             </div>
             <p className="text-sm">{result.final?.root_cause}</p>
+            {result.final?.cause_candidates?.length > 0 && <ResultTable
+              columns={['Kandidát', 'Skupina', 'Začátek', 'Změna oproti kontrole', 'Změna tržeb oproti kontrole', 'Navazující signály', 'Souběžné signály', 'Body pro pořadí', 'Důkazy']}
+              rows={result.final.cause_candidates.map((c: Json) => [c.selected ? `Vybraný · ${c.variable}` : c.variable, `${c.entity} · ${c.entity_ids.join(', ')}`,
+                c.start, c.estimate, c.outcome ? `${fmt(c.outcome.estimate)} · ${c.outcome.variable}` : null,
+                c.later_signals.join(', ') || null, c.concurrent_signals?.join(', ') || null, c.score, c.evidence_ids.join(', ')])} />}
             {result.final?.key_events?.length > 0 && <ResultTable
               columns={['Zjištěná událost', 'Začátek', 'Skupina', 'ID']}
               rows={result.final.key_events.map((k: Json) => [k.description, k.start_time, k.entity, k.entity_ids?.join(', ') || null])} />}
@@ -190,9 +151,17 @@ export function DetectiveTab({ runId }: { runId: string }) {
           <div className="space-y-2">
             {steps.map((s: Json) => (
               <details key={s.step} className="card p-3" open={!!s.sql && s.step < 2}>
-                <summary className="text-sm cursor-pointer"><b>Krok {s.step + 1}</b> – {s.thought}</summary>
+                <summary className="text-sm cursor-pointer"><b>{s.observation?.evidence_id || `Krok ${s.step + 1}`}</b> – {s.thought}</summary>
                 {s.sql && <pre className="mono text-[11px] bg-slate-50 p-2 mt-2 whitespace-pre-wrap">{s.sql}</pre>}
-                {s.observation?.ok && (Array.isArray(s.observation.columns) && Array.isArray(s.observation.rows)
+                {s.observation?.comparison && <ResultTable columns={['Srovnání změn', 'Hodnota']}
+                  rows={[
+                    ['Změna u zasažených', s.observation.comparison.affected_change],
+                    ['Změna u kontrol', s.observation.comparison.control_change],
+                    ['Rozdíl v rozdílech', s.observation.comparison.estimate],
+                    ['95% interval', s.observation.comparison.ci95?.map(fmt).join(' až ')],
+                    ['Trend rozdílu před změnou za období', s.observation.comparison.pre_gap_slope],
+                  ]} />}
+                {s.observation?.ok && !s.observation.comparison && (Array.isArray(s.observation.columns) && Array.isArray(s.observation.rows)
                   ? <ResultTable columns={s.observation.columns} rows={s.observation.rows} max={40} />
                   : <pre className="text-xs whitespace-pre-wrap break-words">{s.observation.summary}</pre>)}
                 {s.observation && !s.observation.ok && <div className="text-xs text-red-700">{s.observation.error || s.observation.summary}</div>}

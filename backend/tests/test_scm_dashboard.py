@@ -32,10 +32,23 @@ def test_dashboard_repairs_sql_using_original_story_and_schema(tmp_path, monkeyp
 
     monkeypatch.setattr(scm_dashboard, "get_llm", lambda: Fake())
     story = "Změna poptávky ovlivňuje počet nákupů."
-    _, widgets, errors = asyncio.run(scm_dashboard.plan_scm_dashboard(spec, db, story))
+    events = [
+        {"kind": "story", "description": "Změna poptávky", "first_date": "2025-01-01"},
+        {"kind": "distractor", "description": "Nesouvisející rekonstrukce silnice"},
+    ]
+    _, widgets, errors = asyncio.run(scm_dashboard.plan_scm_dashboard(spec, db, story, events=events))
     assert story in prompts[0] and '"units"' in prompts[0]
+    assert "2025-01-01" in prompts[0] and "rekonstrukce silnice" not in prompts[0]
     assert "missing" in prompts[1]
     assert not errors and {widget["id"]: widget["rows"] for widget in widgets} == {"x": [[3.0]], "y": [[8.0]]}
+
+
+def test_dashboard_rejects_duplicate_points_in_lines_but_keeps_scatter_points():
+    widget = {"chart": "line", "columns": ["x", "y", "group"], "y": ["y"], "x": "x",
+              "series": "group", "rows": [[1, 2, "a"], [1, 3, "a"]]}
+    assert scm_dashboard.widget_problem(widget)
+    assert not scm_dashboard.widget_problem({**widget, "chart": "scatter"})
+    assert scm_dashboard.widget_problem({**widget, "chart": "heatmap", "series": None})
 
 
 def test_scm_dashboard_is_generated_at_run_and_can_be_refreshed(monkeypatch):

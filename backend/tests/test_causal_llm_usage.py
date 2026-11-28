@@ -84,7 +84,7 @@ def test_interactive_detective_checks_evidence_before_accepting_a_conclusion(run
     stored = service.store.load_run(run_id)
     stored["observation"] = {"observation_id": selected.observation_id}
     service.store.save_json(run_id, "run.json", stored)
-    report = asyncio.run(service.legacy_detective_view(run_id))
+    report = asyncio.run(service.legacy_detective_view(run_id, kind="llm"))
     assert report["observation_id"] == selected.observation_id
     prompts = [prompt for _, prompt, _ in client._client.calls]
     assert len(prompts) == 3

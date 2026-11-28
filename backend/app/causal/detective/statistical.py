@@ -3,7 +3,7 @@
 A generic, scripted analyst that uses exactly the same sandboxed tools as the LLM detective:
 schema inspection → data-quality reports → join checks → per-table analytic datasets over many-to-one
 FK joins → PC discovery with effective sample sizes → adjusted regressions → per-group change-point
-scans of every time series → root cause = earliest group-specific change on the coarsest grouping.
+scans of every time series. The interactive SCM detective ranks multiple group changes against controls.
 
 It is cheap enough for difficulty screening and makes optimisation tests reproducible. Results are
 labelled ``agent.kind = "statistical"`` – it is a reference analyst, not an LLM.
@@ -22,6 +22,7 @@ from .tools import Toolbox, _q
 MAX_PC_COLUMNS = 12
 MAX_GROUPS = 50
 EVENT_T = 5.0
+MAX_CAUSE_CANDIDATES = 12
 
 
 class SchemaGraph:
@@ -62,6 +63,7 @@ class StatisticalDetective:
         self.col_kind: dict[str, dict[str, str]] = {}
         self.dedupe: dict[str, bool] = {}
         self.queries: list[str] = []
+        self.outcome_scans: list[tuple[str, str, dict[str, Any]]] = []
 
     # ------------------------------------------------------------------ helpers
     def call(self, tool: str, **args: Any):
@@ -213,7 +215,7 @@ class StatisticalDetective:
             ev = [e["evidence"]]
             direction, strength = ("+" if e.get("r", 0) >= 0 else "-"), None
             q, cols = datasets.get(e["table"], (None, []))
-            if q and e["type"] == "directed":
+            if q and (e["type"] == "directed" or self.cfg.outcome_aware_ranking):
                 adj = [p for p in parents[e["target"]] if p != e["source"] and p in cols][:4]
                 reg = self.call("fit_linear_regression", query=q, target=e["target"], features=[e["source"], *adj])
                 if reg.ok:
@@ -222,8 +224,9 @@ class StatisticalDetective:
                         strength = coef["estimate"]
                         direction = "+" if strength >= 0 else "-"
                         ev.append(reg.evidence_id)
+                        effect_type = "association" if self.cfg.outcome_aware_ranking else ("direct" if adj else "total")
                         effects.append(EstimatedEffect(source=e["source"], target=e["target"],
-                                                       effect_type="direct" if adj else "total",
+                                                       effect_type=effect_type,
                                                        estimate=float(strength), standard_error=coef.get("se"),
                                                        adjustment_set=adj, evidence_ids=[reg.evidence_id]))
             rels.append(InferredRelationship(
@@ -283,6 +286,8 @@ class StatisticalDetective:
                                      group_column="g")
                     if not item.ok:
                         continue
+                    if self.cfg.outcome_aware_ranking and self.is_revenue(vname):
+                        self.outcome_scans.append((vname, gname, item.args))
                     ss = item.result["series"]
                     if len(ss) < 2:
                         continue
@@ -323,6 +328,10 @@ class StatisticalDetective:
                                    evidence_ids=[m["evidence"]], role="consequence"))
         if not events:
             return []
+        if self.cfg.rank_cause_candidates:
+            for event in events:
+                event.role = "other"
+            return events
         # root cause: the earliest group-specific change on an entity-level grouping (few groups);
         # ties are broken by the coarser grouping and the stronger signal
         n_groups = {(m["variable"], m["entity"]): m["n_groups"] for m in merged.values()}
@@ -332,18 +341,151 @@ class StatisticalDetective:
         root.role = "root_cause"
         return events
 
+    @staticmethod
+    def is_revenue(variable: str) -> bool:
+        name = variable.rsplit(".", 1)[-1].lower().split("_")
+        return bool({"revenue", "turnover", "trzby"} & set(name))
+
+    def compare_event(self, event: KeyEvent):
+        if not event.entity_ids or not event.start_time:
+            return None
+        scan = next((item for item in self.tb.log if item.evidence_id in event.evidence_ids
+                     and item.tool == "analyze_time_series"), None)
+        if not scan:
+            return None
+        options = {"refine_direction": event.direction} if self.cfg.outcome_aware_ranking else {}
+        comparison = self.call("compare_group_changes",
+                               **{key: scan.args[key] for key in ("query", "time_column", "group_column", "value_column")},
+                               treated_groups=event.entity_ids, start=event.start_time, **options)
+        if comparison.ok:
+            event.evidence_ids.append(comparison.evidence_id)
+            if self.cfg.outcome_aware_ranking:
+                event.start_time = comparison.result["start"]
+                event.description = (f"{event.variable}: změna oproti kontrole {comparison.result['estimate']:+.3g}, "
+                                     f"skupina {event.entity} {event.entity_ids}, odhad začátku {event.start_time}")
+        return comparison
+
+    def rank_candidates(self, events: list[KeyEvent], relationships: list[InferredRelationship]) -> list[dict[str, Any]]:
+        """Compare several observed changes before picking an explanation."""
+        def group_key(entity: str | None) -> tuple[str, ...]:
+            table, _, column = (entity or "").partition(".")
+            return tuple(self.g.fks.get(table, {}).get(column, (table, column)))
+
+        def same_group(first: KeyEvent, second: KeyEvent) -> bool:
+            return group_key(first.entity) == group_key(second.entity) and bool(set(first.entity_ids) & set(second.entity_ids))
+
+        def same_signal(first: dict, second: dict) -> bool:
+            return all(first[k] == second[k] for k in ("variable", "start", "estimate", "ci95"))
+
+        links: dict[str, set[str]] = defaultdict(set)
+        for rel in relationships:
+            links[rel.source].add(rel.target)
+            if rel.edge_type != "directed":
+                links[rel.target].add(rel.source)
+
+        candidates = sorted(events, key=lambda e: (-e.confidence, e.start_time or "", e.variable or "",
+                                                   e.entity or "", e.entity_ids))[:MAX_CAUSE_CANDIDATES]
+        ranked = []
+        for event in candidates:
+            item = self.compare_event(event)
+            if not item or not item.ok:
+                continue
+            result = item.result
+            estimate = abs(result["estimate"])
+            interval = result["ci95"]
+            excludes_zero = bool(interval and interval[0] * interval[1] > 0)
+            matches_direction = estimate > 0 and (result["estimate"] > 0) == (event.direction == "+")
+            pre_drift = abs(result["pre_gap_slope"]) * (result["periods_before"] - 1)
+            supported = matches_direction and (excludes_zero or interval is None) and pre_drift < estimate
+            strength = min(8.0, 2 * estimate / (interval[1] - interval[0])) if interval and interval[1] > interval[0] else 2.0
+            score = strength / (1 + pre_drift / estimate) if supported else 0.0
+            ranked.append((event, {"variable": event.variable, "entity": event.entity, "entity_ids": event.entity_ids,
+                                   "start": event.start_time, "estimate": result["estimate"], "ci95": interval,
+                                   "score": score, "supported": supported, "evidence_ids": [item.evidence_id],
+                                   "later_signals": [], "concurrent_signals": []}))
+        for event, row in ranked:
+            if not row["supported"]:
+                continue
+            neighbours = links.get(event.variable, set())
+            linked = neighbours | {target for node in neighbours for target in links[node]}
+            for other, outcome in ranked:
+                if not (outcome["supported"] and other.variable != event.variable
+                        and other.variable in linked and same_group(event, other)):
+                    continue
+                if row["start"] < outcome["start"]:
+                    row["later_signals"].append(other.variable)
+                    row["evidence_ids"].append(outcome["evidence_ids"][0])
+                elif self.cfg.outcome_aware_ranking and row["start"] == outcome["start"]:
+                    row["concurrent_signals"].append(other.variable)
+            if self.cfg.outcome_aware_ranking:
+                row["outcome"] = None
+                if self.is_revenue(event.variable):
+                    # The outcome itself can corroborate a hypothesis, but cannot explain its own decline.
+                    continue
+                compatible = [(variable, args) for variable, entity, args in self.outcome_scans if
+                              group_key(event.entity) == group_key(entity)]
+                checked = []
+                for variable, args in sorted(compatible, key=lambda pair: (pair[0] not in linked, pair[0]))[:2]:
+                    result = self.call("compare_group_changes", **args, treated_groups=event.entity_ids,
+                                       start=event.start_time, window_periods=8)
+                    if result.ok:
+                        checked.append((variable, result))
+                if checked:
+                    variable, evidence = min(checked, key=lambda pair: (
+                        not (pair[1].result["ci95"] and pair[1].result["ci95"][1] < 0),
+                        pair[0] not in linked, pair[0]))
+                    result = evidence.result
+                    support = bool(result["ci95"] and result["ci95"][1] < 0)
+                    row["outcome"] = {"variable": variable, "estimate": result["estimate"],
+                                      "ci95": result["ci95"], "supported": support}
+                    row["evidence_ids"].append(evidence.evidence_id)
+                    if support:
+                        row["score"] += 3 if variable in linked else 1
+                    else:
+                        row["score"] *= 0.6
+        for _, row in ranked:
+            if not row["supported"]:
+                continue
+            equivalents = [other for _, other in ranked if other["supported"] and same_signal(row, other)]
+            row["later_signals"] = sorted({signal for other in equivalents for signal in other["later_signals"]})
+            row["concurrent_signals"] = sorted({signal for other in equivalents for signal in other["concurrent_signals"]})
+            row["evidence_ids"] = list(dict.fromkeys([*row["evidence_ids"], *(
+                evidence for other in equivalents for evidence in other["evidence_ids"]
+            )]))
+            row["score"] = round(row["score"] + min(4, 2 * len(row["later_signals"])), 3)
+
+        ranked.sort(key=lambda pair: (-pair[1]["score"], len(pair[0].entity_ids)))
+        causes = [pair for pair in ranked if not (self.cfg.outcome_aware_ranking and self.is_revenue(pair[0].variable))]
+        if causes and causes[0][1]["supported"]:
+            winner, best = causes[0]
+            rival = next((row for _, row in causes[1:] if not same_signal(best, row)
+                          and row["evidence_ids"][0] not in best["evidence_ids"]), None)
+            if not rival or best["score"] - rival["score"] >= 0.5:
+                winner.role = "root_cause"
+                best["selected"] = True
+                winner.evidence_ids = list(dict.fromkeys([*winner.evidence_ids, *best["evidence_ids"]]))
+                for other, row in ranked[1:]:
+                    if not same_signal(best, row) and row["evidence_ids"][0] in best["evidence_ids"]:
+                        other.role = "consequence"
+        return [row for _, row in ranked]
+
     # ------------------------------------------------------------------ run
     def run(self) -> DetectiveResult:
         self.quality()
         self.classify()
         rels, effects = self.discovery()
         events = self.events()
+        candidates = self.rank_candidates(events, rels) if self.cfg.rank_cause_candidates else []
         root = next((e for e in events if e.role == "root_cause"), None)
+        if self.cfg.compare_detected_groups and not self.cfg.rank_cause_candidates and root:
+            self.compare_event(root)
         summary = []
         if root:
             summary.append(f"Pravděpodobná výchozí událost: {root.description}.")
+        elif self.cfg.rank_cause_candidates:
+            summary.append("Dostupné důkazy nestačí k výběru jedné hlavní příčiny.")
         for e in [x for x in events if x.role != "root_cause"][:6]:
-            summary.append(f"Následek: {e.description}.")
+            summary.append(f"Další zjištěná změna: {e.description}.")
         strong = sorted(rels, key=lambda r: -r.confidence)[:6]
         if strong:
             summary.append("Nejsilnější vztahy: " + "; ".join(
@@ -352,6 +494,7 @@ class StatisticalDetective:
         return DetectiveResult(
             story_summary=" ".join(summary) or "Nebyla nalezena žádná výrazná událost ani vztah.",
             key_events=events,
+            cause_candidates=candidates,
             inferred_causal_graph={"nodes": nodes, "edges": [{"source": r.source, "target": r.target,
                                                               "type": r.edge_type} for r in rels]},
             inferred_relationships=rels, estimated_effects=effects,

@@ -167,6 +167,7 @@ export const api = {
   replan: (sid: string, body: Json) => req<{ job_id: string }>('POST', `/api/plan/${sid}/replan`, body),
   validateSpec: (spec: Spec) => req<{ errors: string[] }>('POST', '/api/spec/validate', spec),
   startRun: (body: Json) => req<{ job_id: string }>('POST', '/api/runs', body),
+  reviewRun: (id: string) => req<{ session_id: string }>('POST', `/api/runs/${id}/review`),
   runs: () => req<Json[]>('GET', '/api/runs'),
   run: (id: string) => req<Json>('GET', `/api/runs/${id}`),
   llmCalls: (id: string) => req<Json[]>('GET', `/api/runs/${id}/llm-calls`),
@@ -181,8 +182,6 @@ export const api = {
     return req<Json>('GET', `/api/runs/${id}/tables/${t}?${q}`)
   },
   query: (id: string, sql: string, limit = 500) => req<QueryResult>('POST', `/api/runs/${id}/query`, { sql, limit }),
-  whatif: (id: string, knob_overrides: Record<string, string>, label = '') =>
-    req<{ job_id: string }>('POST', `/api/runs/${id}/whatif`, { knob_overrides, label }),
   compare: (a: string, b: string) => req<Json>('GET', `/api/compare?a=${a}&b=${b}`),
   commentary: (id: string) => req<{ headline: string; paragraphs: string[] }>('POST', `/api/runs/${id}/commentary`),
   startDetective: (id: string) => req<{ job_id: string }>('POST', `/api/runs/${id}/detective`),

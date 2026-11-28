@@ -150,6 +150,7 @@ class EvidenceItem(BaseModel):
 class DetectiveResult(BaseModel):
     story_summary: str = ""
     key_events: list[KeyEvent] = Field(default_factory=list)
+    cause_candidates: list[dict[str, Any]] = Field(default_factory=list)
     inferred_causal_graph: dict[str, Any] = Field(default_factory=dict, description="{nodes, edges}")
     inferred_relationships: list[InferredRelationship] = Field(default_factory=list)
     estimated_effects: list[EstimatedEffect] = Field(default_factory=list)

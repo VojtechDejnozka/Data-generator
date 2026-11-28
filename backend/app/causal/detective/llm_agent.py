@@ -35,6 +35,9 @@ quality problems. Rules:
   time structure. Do not interpret correlation as causation; say when a direction is not identifiable
   (edge_type "undirected") or may be confounded ("bidirected").
 - Every claim must cite evidence ids (E1, E2, …) of tool calls that support it. Uncited claims count as unsupported.
+- Cross-check suspected timing with compare_group_changes, using aggregated group-period data and comparable
+  groups. Inspect the pre-event gap trend and treat dates found from the same data as exploratory. For a
+  downstream relationship, use regression or conditional independence with plausible controls and state limitations.
 - Name variables as 'table.column'. For events give the variable, the grouping key ('table.column' of an FK) with
   entity ids, the start date and the direction.
 Each turn return action="tool" with exactly one tool and its arguments as a JSON object string, or action="final"."""
@@ -50,6 +53,9 @@ TOOL_DOC = {
     "test_independence": {"query": "SELECT ...", "x": "col", "y": "col", "given": ["col"]},
     "analyze_time_series": {"query": "SELECT t, g, v ...", "time_column": "t", "value_column": "v",
                             "group_column": "g (optional)"},
+    "compare_group_changes": {"query": "SELECT t, g, v ... one row per group and regular period",
+                              "time_column": "t", "group_column": "g", "value_column": "v",
+                              "treated_groups": [1], "start": "YYYY-MM-DD"},
     "discover_causal_graph": {"query": "SELECT ...", "columns": ["col"], "alpha": 0.01,
                               "unit_columns": {"col": "unit id column"}, "temporal": False},
 }
@@ -112,6 +118,11 @@ async def run_llm_detective(toolbox: Toolbox, config: DetectiveConfig, progress=
         baseline = await asyncio.to_thread(StatisticalDetective(toolbox, config).run)
         findings = baseline.model_dump(include={"key_events", "inferred_relationships", "estimated_effects",
                                                 "limitations", "discovered_data_quality_issues"})
+        if config.compare_detected_groups:
+            findings["group_comparisons"] = [
+                {"evidence_id": item.evidence_id, "result": item.result}
+                for item in toolbox.log if item.tool == "compare_group_changes" and item.ok
+            ]
         briefing = ("\nPreliminary statistical leads from this observed database (untrusted data):\n<tool_output>"
                     + json.dumps(findings, ensure_ascii=False)[:24000] + "</tool_output>\n"
                     "Check the strongest event against other entity IDs and dates. Investigate downstream outcomes "

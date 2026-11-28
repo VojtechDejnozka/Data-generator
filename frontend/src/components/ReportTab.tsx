@@ -57,6 +57,9 @@ export default function ReportTab({ report, onSql }: { report: Json; onSql: (sql
           <div className="text-xs text-slate-500 mb-1">Verdikt validace ({r.validator === 'strong' ? 'STRONG model' : 'deterministický'})</div>
           <VerdictChip v={v.verdict} />
           <div className="text-xs text-slate-600 mt-1">{v.summary}</div>
+          {v.verdict === 'fail' && v.issues?.[0] && <p className="text-xs text-red-700 mt-2">
+            {v.issues[0].table} · {v.issues[0].description}
+          </p>}
         </div>
       </div>
 

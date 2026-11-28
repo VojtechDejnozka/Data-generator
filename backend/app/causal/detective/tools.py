@@ -42,11 +42,34 @@ def _clean(v: Any) -> Any:
     return v
 
 
+def _change_onset(gap: np.ndarray, direction: str) -> int | None:
+    """Select a sustained step or ramp only if it improves on the baseline trend."""
+    n = len(gap)
+    t = np.arange(n, dtype=float)
+    baseline = np.column_stack((np.ones(n), t))
+
+    def loss(design):
+        beta = np.linalg.lstsq(design, gap, rcond=None)[0]
+        residual = gap - design @ beta
+        return max(float(residual @ residual), 1e-12), beta[-1]
+
+    baseline_rss, _ = loss(baseline)
+    best, onset = n * np.log(baseline_rss) - 3 * np.log(n), None
+    for start in range(5, n - 4):
+        for length in (1, 4, 8, 12, 24):
+            exposure = np.clip((t - start + 1) / length, 0, 1)
+            rss, change = loss(np.column_stack((baseline, exposure)))
+            score = n * np.log(rss)
+            if score < best and change != 0 and (change > 0) == (direction == "+"):
+                best, onset = score, start
+    return onset
+
+
 class Toolbox:
     TOOLS = ["inspect_schema", "list_tables", "describe_table", "profile_column", "execute_sql",
              "get_missingness_report", "get_duplicate_report", "check_join", "compute_correlation",
              "fit_linear_regression", "fit_logistic_regression", "test_independence", "analyze_time_series",
-             "discover_causal_graph", "create_plot"]
+             "discover_causal_graph", "create_plot", "compare_group_changes"]
 
     def __init__(self, db: ReadOnlyDB, schema: PublicSchema, max_rows: int = 200, sample_rows: int = 30000,
                  alpha: float = 0.01, seed: int = 0):
@@ -323,6 +346,70 @@ class Toolbox:
                 "series": out, "truncated": trunc,
                 "note": "change point = split maximising the two-sample t statistic of period means (exploratory; "
                         "max-statistic p-values are optimistic)"}
+
+    def _compare_group_changes(self, query: str, time_column: str, group_column: str, value_column: str,
+                               treated_groups: list[int | str], start: str, refine_direction: str | None = None,
+                               window_periods: int | None = None) -> dict[str, Any]:
+        """Difference-in-differences over matched period means, with time-series robust uncertainty."""
+        df, truncated = self.frame(query)
+        names = [time_column, group_column, value_column]
+        if len(set(names)) != 3 or any(name not in df.columns for name in names):
+            raise ToolError("provide distinct time, group and numeric value columns")
+        if not treated_groups or truncated:
+            raise ToolError("provide affected groups and aggregate to group × period before running the test")
+        df = df[names].copy()
+        df[time_column] = pd.to_datetime(df[time_column].astype(str), format="ISO8601", errors="coerce", utc=True)
+        cutoff = pd.to_datetime(str(start), format="ISO8601", errors="coerce", utc=True)
+        if pd.isna(cutoff):
+            raise ToolError("start must be an ISO date")
+        df[value_column] = pd.to_numeric(df[value_column], errors="coerce").replace([np.inf, -np.inf], np.nan)
+        df = df.dropna()
+        if df[group_column].nunique() > 60:
+            raise ToolError("too many groups (max 60); select comparable groups first")
+        by_group = df.groupby([time_column, group_column])[value_column].mean().unstack(group_column).sort_index()
+        treated = by_group.columns.isin(treated_groups)
+        if not treated.any() or treated.all():
+            raise ToolError("affected and control groups must both be present")
+        matched = by_group.dropna()
+        dropped = len(by_group) - len(matched)
+        if refine_direction in ("+", "-") and len(matched) >= 10:
+            gap = matched.loc[:, treated].mean(axis=1) - matched.loc[:, ~treated].mean(axis=1)
+            onset = _change_onset(gap.to_numpy(), refine_direction)
+            if onset is not None:
+                cutoff = matched.index[onset]
+                start = cutoff.date().isoformat()
+        if window_periods is not None:
+            if type(window_periods) is not int or not 5 <= window_periods <= 26:
+                raise ToolError("window_periods must be an integer between 5 and 26")
+            matched = pd.concat([matched.loc[matched.index < cutoff].tail(window_periods),
+                                 matched.loc[matched.index >= cutoff].head(window_periods)])
+        post = np.asarray(matched.index >= cutoff)
+        if min(post.sum(), (~post).sum()) < 5:
+            raise ToolError("need at least five complete matched periods on each side of the change")
+        affected = matched.loc[:, treated].mean(axis=1).to_numpy()
+        controls = matched.loc[:, ~treated].mean(axis=1).to_numpy()
+        gap = affected - controls
+        before, after = gap[~post], gap[post]
+        estimate = float(after.mean() - before.mean())
+        # Newey-West variance for the post indicator in an OLS regression of the period gap.
+        centered = post.astype(float) - post.mean()
+        score = centered * (gap - before.mean() - estimate * post)
+        bandwidth = int(4 * (len(gap) / 100) ** (2 / 9))
+        variance = score @ score
+        for lag in range(1, bandwidth + 1):
+            variance += 2 * (1 - lag / (bandwidth + 1)) * (score[lag:] @ score[:-lag])
+        se = float(np.sqrt(max(0, variance)) / (centered @ centered))
+        bound = stats.t.ppf(0.975, len(gap) - 2) * se
+        return {"test": "difference-in-differences on period means (Newey-West)", "estimate": _clean(estimate),
+                "affected_change": _clean(float(affected[post].mean() - affected[~post].mean())),
+                "control_change": _clean(float(controls[post].mean() - controls[~post].mean())),
+                "ci95": [_clean(float(estimate - bound)), _clean(float(estimate + bound))] if se > 0 else None,
+                "p": float(2 * stats.t.sf(abs(estimate / se), len(gap) - 2)) if se > 0 else None,
+                "pre_gap_slope": _clean(float(np.polyfit(np.arange(len(before)), before, 1)[0])),
+                "periods_before": int(len(before)), "periods_after": int(len(after)),
+                "dropped_periods": dropped, "start": start,
+                "note": "Use regularly spaced periods. Requires comparable pre-trends; a date selected from "
+                        "these same data makes the result exploratory."}
 
     def _discover_causal_graph(self, query: str, columns: list[str], alpha: Optional[float] = None,
                                unit_columns: Optional[dict[str, str]] = None, temporal: bool = False) -> dict[str, Any]:

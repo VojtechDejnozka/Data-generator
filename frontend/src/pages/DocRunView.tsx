@@ -24,6 +24,11 @@ export default function DocRunView() {
   if (err) return <div className="text-red-700">{err}</div>
   if (!run) return <div className="text-slate-500">Načítám…</div>
   const spec = run.doc_spec
+  const sourceRunId = spec.source_run_id || run.source_run_id
+  const sourceTable = spec.source_table || run.source_table
+  const sourceUrl = sourceRunId ? `/runs/${sourceRunId}?${new URLSearchParams({
+    tab: 'files', ...(sourceTable ? { table: sourceTable } : {}),
+  })}` : null
   const docs = run.documents as Json[]
   const fileUrl = (f: string, dl = false) => `/api/docs/runs/${rid}/files/${f}${dl ? '?download=true' : ''}`
   const selDoc = docs.find((d) => d.doc_id === sel)
@@ -35,12 +40,13 @@ export default function DocRunView() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex-1 min-w-0">
-          <div className="text-xs text-slate-500 mono">{run.run_id}{spec.source_run_id && <> · fakta z tabulky {spec.source_table}{spec.source_filter_col && ` (${spec.source_filter_col} = ${spec.source_filter_val})`} běhu <Link className="text-blue-700" to={`/runs/${spec.source_run_id}?tab=files`}>{spec.source_run_id}</Link></>}</div>
+          <div className="text-xs text-slate-500 mono">{run.run_id}{sourceUrl && <> · fakta z tabulky {sourceTable}{spec.source_filter_col && ` (${spec.source_filter_col} = ${spec.source_filter_val})`} běhu <Link className="text-blue-700" to={sourceUrl}>{sourceRunId}</Link></>}</div>
           <h1 className="text-[28px] leading-tight font-semibold tracking-[-0.015em] truncate">{spec.name} <span className="text-slate-500 font-normal text-base">– {docs.length} × {spec.document_type} ({spec.format.toUpperCase()})</span></h1>
         </div>
         <VerdictChip v={v.verdict} />
         <span className="chip bg-slate-100">{run.checks_summary.passed}/{run.checks_summary.total} prošlo kontrolami</span>
         {run.mock && <span className="chip bg-amber-50 text-amber-800 border border-amber-200">mock LLM</span>}
+        {sourceUrl && <Link className="btn" to={sourceUrl}>Zpět ke zdrojovému běhu</Link>}
         <a className="btn" href={`/api/docs/runs/${rid}/export.zip`}>⬇ Vše (ZIP)</a>
         <a className="btn" href={`/api/runs/${rid}/db`}>⬇ Fakta (SQLite)</a>
       </div>

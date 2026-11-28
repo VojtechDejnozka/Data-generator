@@ -39,6 +39,24 @@ def test_draft_rejects_unexecutable_model_with_concrete_errors():
         SCMDraft.model_validate({"scm": d})
 
 
+def test_planner_enforces_positive_minimum_for_poisson_counts():
+    from app.causal.contracts import SCMSpec
+    from app.causal.engine import generate_world
+    from .causal_fixtures import linear_xy
+
+    data = linear_xy(100).model_dump()
+    data["variables"].append({
+        "variable_id": "quantity", "entity": "units", "column": "quantity", "data_type": "int",
+        "mechanism": {"type": "exogenous", "params": {"distribution": {"family": "poisson", "params": {"rate": 1.7}}}},
+        "constraints": {"min": 1, "clip": False},
+    })
+    original = SCMSpec.model_validate(data)
+    assert any(check.check_id == "variable.poisson_min" for check in planner.validate_spec(original).warnings)
+    draft = SCMDraft.model_validate({"scm": data})
+    assert any("quantity" in note for note in draft.auto_repairs)
+    assert generate_world(draft.to_spec()).tables["units"]["quantity"].min() == 1
+
+
 def test_large_draft_rejects_small_model_and_accepts_scaled_reference():
     repaired = planner.LargeSCMDraft.model_validate({"scm": scm_obj()})
     assert repaired.auto_repairs

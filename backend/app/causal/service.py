@@ -520,7 +520,8 @@ async def execute_causal_run(req: RunRequest, job) -> dict[str, Any]:
         job.emit("dashboard", "LLM navrhuje grafy podle původního příběhu", 0.76)
         with usage_scope(tracker):
             try:
-                proposed, widgets, werrs = await plan_scm_dashboard(spec, db, story)
+                proposed, widgets, werrs = await plan_scm_dashboard(
+                    spec, db, story, events=gw.manifest["realized_events"])
                 if widgets:
                     dashboard, dash_source = proposed, "llm"
             except LLMError as exc:
@@ -575,7 +576,9 @@ async def refresh_scm_dashboard(run_id: str, job) -> dict[str, Any]:
     job.emit("dashboard", "LLM navrhuje grafy podle původního příběhu", 0.1)
     tracker = UsageTracker()
     with usage_scope(tracker):
-        dashboard, widgets, errors = await plan_scm_dashboard(scenario_spec(scm), store.db_path(run_id), story, refresh=True)
+        manifest = store.load_json(run_id, "manifest.json", {}) or {}
+        dashboard, widgets, errors = await plan_scm_dashboard(
+            scenario_spec(scm), store.db_path(run_id), story, events=manifest.get("realized_events", []), refresh=True)
     if not widgets:
         raise LLMError("LLM nenavrhlo žádný použitelný graf. " + " · ".join(errors))
     meta = {"source": "llm", "errors": errors, "title": dashboard.title, "usage": tracker.summary()}
@@ -619,7 +622,7 @@ def causal_summary(run_id: str) -> dict[str, Any]:
                                           for p in sorted((base / "evaluations").glob("*.json"))])}
 
 
-async def legacy_detective_view(run_id: str, job=None, kind: str = "llm") -> dict[str, Any]:
+async def legacy_detective_view(run_id: str, job=None, kind: str = "statistical") -> dict[str, Any]:
     """The existing "Detective" tab for SCM runs: blind detective on the *observed* baseline (never on the
     clean world), evaluated against the ground truth, returned in the shape the current UI renders."""
     _ensure_valid(run_id)
@@ -632,15 +635,22 @@ async def legacy_detective_view(run_id: str, job=None, kind: str = "llm") -> dic
             world, manifest = _world_for(run_id, {**meta, "world_seed": meta["seed"]})
     else:
         info = observe_and_store(run_id, world, CorruptionConfig())
-    cfg = DetectiveConfig(kind=kind, statistical_first_pass=True)
+    cfg = DetectiveConfig(kind=kind, statistical_first_pass=True, compare_detected_groups=True,
+                          rank_cause_candidates=kind == "statistical", outcome_aware_ranking=kind == "statistical")
+    if job and cfg.rank_cause_candidates:
+        job.emit("detective", "Hledám změny a porovnávám kandidáty s kontrolními skupinami.", 0.05)
     res, tracker = await detective_on_tracked(run_id, info.observation_id, cfg,
                                               progress=(lambda m, f=None: job.emit("detective", m, f)) if job else None)
     ev = evaluate(world.spec, manifest, res, EvaluationConfig(), observation_id=info.observation_id)
     store_evaluation(run_id, ev, res, tracker, cfg, world)
     transcript = []
     for item in res.statistical_results:
+        observation = {"ok": item.ok, "evidence_id": item.evidence_id, "summary": item.summary}
+        if item.ok and item.tool == "compare_group_changes":
+            observation["comparison"] = item.result
         transcript.append({"step": len(transcript), "thought": f"{item.tool} {json.dumps(item.args, ensure_ascii=False)[:160]}",
-                           "sql": item.args.get("query"), "observation": {"ok": item.ok, "summary": item.summary[:400]}})
+                           "sql": item.args.get("query"), "analysis": item.tool,
+                           "observation": observation})
         if job:
             job.emit("detective", f"{item.evidence_id} {item.tool}: {item.summary[:120]}", None, sql=item.args.get("query"))
     root = next((k for k in res.key_events if k.role == "root_cause"), None)
@@ -656,9 +666,11 @@ async def legacy_detective_view(run_id: str, job=None, kind: str = "llm") -> dic
                                    f"({r.estimated_direction}, conf {r.confidence:.2f})"
                                    for r in sorted(res.inferred_relationships, key=lambda r: -r.confidence)[:10]],
                   "key_events": [k.model_dump() for k in res.key_events],
+                  "cause_candidates": res.cause_candidates,
                   "estimated_effects": [effect.model_dump() for effect in res.estimated_effects],
                   "limitations": res.limitations, "alternatives": res.alternative_explanations,
-                  "confidence": round(1 - (ev.difficulty or 100) / 100, 3)},
+                  "confidence": (None if cfg.rank_cause_candidates
+                                 else round(1 - (ev.difficulty or 100) / 100, 3))},
         "transcript": transcript,
         "score": {"score": round(100 * (ev.recovery_score or 0)), "checks": checks,
                   "queries": len(res.executed_queries), "difficulty": ev.difficulty, "evaluation_id": ev.evaluation_id},

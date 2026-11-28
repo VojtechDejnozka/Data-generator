@@ -129,10 +129,10 @@ async def job_events(job_id: str) -> StreamingResponse:
 
 
 # --------------------------------------------------------------------------- planning
-def _create_plan_session(inp: ScenarioInput, resp: PlannerResponse) -> dict:
+def _create_plan_session(inp: ScenarioInput, resp: PlannerResponse, parent_run_id: str | None = None) -> dict:
     sid = secrets.token_hex(6)
     _save_session(sid, {"session_id": sid, "round": 0, "input": inp.model_dump(),
-                        "response": resp.model_dump(mode="json"), "history": []})
+                        "response": resp.model_dump(mode="json"), "history": [], "parent_run_id": parent_run_id})
     return {"session_id": sid}
 
 
@@ -186,12 +186,11 @@ async def _replan_scm(session: dict, req: ReplanRequest, prev: PlannerResponse) 
     scm = req.spec.scm or prev.spec.scm
     if req.feedback.strip() or req.answers:
         inp = ScenarioInput.model_validate(session["input"])
-        extra = "\n\nZpětná vazba uživatele: " + req.feedback + (
-            "\nOdpovědi: " + json.dumps(req.answers, ensure_ascii=False) if req.answers else "")
-        inp = inp.model_copy(update={"story": (inp.story + extra)[:8000], "engine": "scm",
-                                     "custom_model": (inp.custom_model + "\n\nCurrent SCM JSON (keep user edits):\n"
-                                                      + scm.model_dump_json())[:8000]})
-        return await plan_story(inp)
+        revised = await plan_story(inp, current=scm, feedback=req.feedback, answers=req.answers)
+        fields = {"entities", "time", "variables", "events", "ground_truth", "invariants"}
+        if scm.model_dump(include=fields) == revised.spec.scm.model_dump(include=fields):
+            raise ValueError("Přeplánování model nezměnilo. Zkuste konkrétnější úpravu.")
+        return revised
     from .causal.validation import validate_spec as validate_scm
     rep = validate_scm(scm)
     return PlannerResponse(spec=scenario_spec(scm, req.spec), questions=[], suggestions=[],
@@ -227,6 +226,29 @@ async def start_run(req: RunRequest) -> dict:
 @app.get("/api/runs")
 def runs_list() -> list[dict]:
     return store.list_runs()
+
+
+@app.post("/api/runs/{run_id}/review")
+def review_from_run(run_id: str) -> dict:
+    run = _run_or_404(run_id)
+    spec = ScenarioSpec.model_validate(run["spec"])
+    original = spec.scm.meta.original_story if spec.scm else spec.story.logline
+    inp = ScenarioInput.model_validate(run.get("input") or {
+        "story": (original or spec.meta.name)[:8000].ljust(10, "."),
+        "seed": spec.meta.seed,
+        "engine": "scm" if spec.scm else "module",
+    })
+    return _create_plan_session(inp, PlannerResponse(spec=spec), parent_run_id=run_id)
+
+
+@app.get("/api/runs/{run_id}/scm.json")
+def download_run_scm(run_id: str) -> Response:
+    run = _run_or_404(run_id)
+    model = (run.get("spec") or {}).get("scm")
+    if not model:
+        raise HTTPException(404, "Běh nemá SCM model.")
+    return Response(json.dumps(model, ensure_ascii=False, indent=2), media_type="application/json",
+                    headers={"Content-Disposition": f'attachment; filename="scm-{run_id}.json"'})
 
 
 @app.get("/api/runs/{run_id}")
@@ -641,6 +663,7 @@ def scm_validate(scm: SCMSpec) -> dict:
     from .causal.contracts import derive_edges
     from .causal.graph import GraphError, execution_plan
     from .causal.mechanisms import describe
+    from .causal.mapping import scenario_tables
     from .causal.validation import validate_spec as validate_scm
     rep = validate_scm(scm)
     plan = None
@@ -649,7 +672,9 @@ def scm_validate(scm: SCMSpec) -> dict:
         plan = {"pre": p.pre, "loop": p.loop, "post": p.post}
     except (GraphError, ValueError):
         pass
-    return {"report": rep.model_dump(), "edges": [e.model_dump() for e in derive_edges(scm)],
+    return {"report": rep.model_dump(),
+            "tables": [t.model_dump() for t in scenario_tables(scm)] if rep.status != "FAIL" else [],
+            "edges": [e.model_dump() for e in derive_edges(scm)],
             "mechanisms": {v.variable_id: describe(v) for v in scm.variables}, "execution_plan": plan}
 
 

@@ -355,6 +355,9 @@ class CorruptionConfig(BaseModel):
 # =========================================================================== detective / evaluation / difficulty
 class DetectiveConfig(BaseModel):
     statistical_first_pass: bool = False
+    compare_detected_groups: bool = False
+    rank_cause_candidates: bool = False
+    outcome_aware_ranking: bool = False
     kind: Literal["statistical", "llm"] = "statistical"
     model_role: Literal["strong", "cheap"] = "strong"
     max_steps: int = Field(14, ge=1, le=60)

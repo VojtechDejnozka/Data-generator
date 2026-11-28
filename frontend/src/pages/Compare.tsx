@@ -35,15 +35,21 @@ function overlays(e: Json): { title: string; spec: Json }[] {
 export default function Compare() {
   const [p] = useSearchParams()
   const a = p.get('a')!, b = p.get('b')!
+  const tab = p.get('tab')
+  const resultsUrl = b ? `/runs/${encodeURIComponent(b)}${tab ? `?${new URLSearchParams({ tab })}` : ''}` : '/'
+  const back = <Link className="btn" to={resultsUrl}>{b ? 'Zpět k výsledkům' : 'Zpět k běhům'}</Link>
   const [d, setD] = useState<Json>(null)
   const [err, setErr] = useState<string | null>(null)
   useEffect(() => { api.compare(a, b).then(setD).catch((e) => setErr(String(e))) }, [a, b])
-  if (err) return <div className="text-red-700">{err}</div>
-  if (!d) return <div className="text-slate-500">Porovnávám…</div>
+  if (err || !d) return <div className="space-y-3">
+    {back}
+    {err ? <p role="alert" className="text-red-700">{err}</p> : <p className="text-slate-500">Porovnávám…</p>}
+  </div>
   return (
     <div className="space-y-5">
+      {back}
       <div className="card p-5">
-        <h1 className="text-[28px] leading-tight font-semibold tracking-[-0.015em] mb-3">Porovnání běhů (what-if)</h1>
+        <h1 className="text-[28px] leading-tight font-semibold tracking-[-0.015em] mb-3">Porovnání běhů</h1>
         <div className="grid md:grid-cols-2 gap-4 text-sm">
           {(['a', 'b'] as const).map((k) => (
             <div key={k} className="border border-slate-200 rounded-lg p-3">
