@@ -54,8 +54,10 @@ export default function App() {
           <div className="text-xs text-slate-500 flex items-center gap-1.5">
             {health?.ok === false && <><span className="size-1.5 rounded-full bg-red-700" aria-hidden="true" /><span className="text-red-700">Backend neodpovídá</span></>}
             {health?.ok && (health.mock
-              ? <><span className="size-1.5 rounded-full bg-amber-400" aria-hidden="true" /><span title="LLM_MOCK=1 nebo chybí klíč">Mock režim, odpovědi z fixtures</span></>
-              : <><span className="size-1.5 rounded-full bg-emerald-700" aria-hidden="true" /><span title={`STRONG ${health.strong_model}, fallback: ${health.strong_fallbacks?.join(', ')}`}>Gemini {health.strong_model}</span></>)}
+              ? <span className="chip bg-amber-50 text-amber-800 border border-amber-200" title="LLM_MOCK=1 nebo chybí klíč">MOCK režim (fixtures)</span>
+              : <span className="chip bg-emerald-50 text-emerald-800 border border-emerald-200" title={`fallback: ${health.strong_fallbacks?.join(', ')}`}>
+                  OpenAI · STRONG {health.strong_model} · CHEAP {health.cheap_model}
+                </span>)}
           </div>
           </div>
         </div>

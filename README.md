@@ -11,13 +11,13 @@ stále později → výpadky zásob → neuskutečněné nákupy → stížnosti
 
 ```bash
 make setup                 # backend venv (uv / Python 3.11+) + npm install, vytvoří .env z .env.example
-# do .env doplňte GEMINI_API_KEY (Google AI Studio) – nebo použijte mock režim
+# do .env doplňte OPENAI_API_KEY (OpenAI) – nebo použijte mock režim
 make mock                  # offline: fixture odpovědi LLM, bez klíče
-make dev                   # reálné Gemini API
+make dev                   # reálné OpenAI API
 # UI: http://127.0.0.1:5173   API: http://127.0.0.1:8000/api/health
 make test                  # backend testy (mock, vč. kauzálního jádra) + typecheck frontendu
 make seed-mock             # předgeneruje 3 demo běhy (příběh, baseline, silné zpoždění) – mock
-make seed                  # totéž s reálným Gemini
+make seed                  # totéž s reálným OpenAI
 ```
 
 Bez Supabase (`SUPABASE_URL` prázdné) běží aplikace v **lokálním režimu bez přihlášení** (`AUTH_DISABLED=1`,
@@ -31,17 +31,14 @@ k `~/.npm`, použijte `npm install --cache /tmp/npm-cache`.
 
 | proměnná | význam |
 |---|---|
-| `GEMINI_API_KEY` | klíč z Google AI Studio – **jen backend**, nikdy ne frontend/repo |
-| `STRONG_MODEL` / `STRONG_FALLBACK_MODELS` | plánování, validace, detektiv (výchozí `gemini-4-carbon` → `gemini-3.8-flash,gemini-3.5-flash,gemini-3.5-flash-lite`) |
-| `CHEAP_MODEL` / `CHEAP_FALLBACK_MODELS` | master data, texty, `llm_rows` (výchozí `gemini-3.5-flash-lite`) |
+| `OPENAI_API_KEY` | klíč z OpenAI – **jen backend**, nikdy ne frontend/repo |
+| `OPENAI_STRONG_MODEL` / `OPENAI_STRONG_FALLBACK_MODELS` | plánování, validace a detektiv (výchozí `gpt-6-luna`) |
+| `OPENAI_CHEAP_MODEL` / `OPENAI_CHEAP_FALLBACK_MODELS` | master data, texty, `llm_rows` (výchozí `gpt-6-luna`) |
 | `LLM_MOCK=1` | fixture odpovědi (vývoj, testy, demo bez klíče / při vyčerpaném limitu) |
 | `LLM_MAX_CONCURRENCY`, `LLM_CACHE`, `LLM_TIMEOUT_S` | souběžnost, cache odpovědí, timeout |
 | `SUPABASE_*`, `VITE_SUPABASE_*`, `SIGNUP_*`, `QUOTA_*`, … | účty a nasazení – viz [tabulka proměnných](#proměnné-prostředí) |
 
-Názvy modelů byly ověřeny 2026-11-27 přes `models.list()` a dokumentaci aistudio.google.com.
-**Free tier má u modelů Gemini 4 kvótu 0** a modely Flash často vracejí 503 (přetížení). Klient proto
-modely zkouší v pořadí fallbacku: 429 s `limit: 0` znamená okamžitý přechod na další model, 429/5xx
-exponenciální backoff. Skutečně použitý model je u každého volání vidět v záložce *Log & tokeny*.
+Klient volá OpenAI Responses API. Při dočasných chybách opakuje požadavek. Alternativní modely lze nastavit ve fallback seznamu.
 
 
 ## Účty, přihlášení a nasazení (Supabase + Vercel)
@@ -200,8 +197,8 @@ vždy doplní (model ho zvolí podle příběhu, jinak 2025-01 – 2026-03).
 ### Datové kontrakty
 `backend/app/contracts/` – `ScenarioSpec` (meta, tables, story/causal_chain/distractors, knobs,
 invariants, evidence, dashboard), `PlannerResponse`, `GenerationPlan`, `ValidationVerdict`. Všechna
-LLM volání používají structured output (`response_json_schema` odvozené z Pydantic) + validaci +
-retry s chybovou hláškou (max 2×). Když Gemini schéma odmítne, klient přepne na JSON mode se schématem
+LLM volání používají structured output (`text.format` odvozené z Pydantic) + validaci +
+retry s chybovou hláškou (max 2×). Když OpenAI schéma odmítne, klient přepne na JSON mode se schématem
 v promptu. Pokud plánovaný příběh odpovídá modulu, STRONG vrací jen kompaktní `ArchetypePlan`
 (úpravy šablony), což je rychlejší a spolehlivější než generování celé specifikace.
 
@@ -278,7 +275,7 @@ Předem: `make seed` (nebo `make seed-mock`) a `make dev`. Otevřete http://127.
 
 1. **Zadání (30 s)** – *Nový scénář* → *⚡ Preset*. Uživatel zadává jen **popis příběhu, velikost dat a seed**;
    firmu, prostředí, počty entit, intenzitu i to, zda data potřebují časovou osu (a jaké období),
-   rozhodne Gemini. *Navrhnout scénář* → průběh (SSE).
+   rozhodne OpenAI. *Navrhnout scénář* → průběh (SSE).
 2. **Review specu (45 s)** – archetyp `retail_supplier_delay`, kauzální řetězec s1–s4 na časové ose,
    distraktory, 13 tabulek (fialová = simulace, modrá/zelená = LLM), knoby, invarianty, důkazní dotazy.
    Přijměte návrh „promotions“ (tabulka přes `llm_rows`) → *Schválit a generovat*. Fáze pipeline běží živě.

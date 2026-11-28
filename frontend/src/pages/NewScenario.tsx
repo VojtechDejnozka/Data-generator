@@ -111,7 +111,7 @@ export default function NewScenario() {
         <legend className="font-semibold text-sm pr-2">Velikost a složitost datasetu</legend>
         <label className="block max-w-xs mb-2"><span className="label">Přibližný rozsah</span>
           <select className="input" value={volume} onChange={(e) => setVolume(e.target.value)}>
-            <option value="small">Malý</option><option value="medium">Střední</option><option value="large">Velký</option>
+            <option value="small">Malý</option><option value="medium">Střední</option><option value="large">{scm ? 'Velký (alespoň 100 000 řádků celkem)' : 'Velký'}</option>
           </select>
         </label>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">

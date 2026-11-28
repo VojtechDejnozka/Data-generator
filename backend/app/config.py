@@ -29,10 +29,10 @@ DEV_USER_ID = "00000000-0000-4000-a000-00000000d0e0"  # owner of everything when
 
 @dataclass
 class Settings:
-    gemini_api_key: str = ""
-    strong_model: str = "gemini-4-carbon"
+    openai_api_key: str = ""
+    strong_model: str = "gpt-6-luna"
     strong_fallbacks: list[str] = field(default_factory=list)
-    cheap_model: str = "gemini-3.5-flash-lite"
+    cheap_model: str = "gpt-6-luna"
     cheap_fallbacks: list[str] = field(default_factory=list)
     llm_mock: bool = False
     llm_cache: bool = True
@@ -73,7 +73,7 @@ class Settings:
     @property
     def mock(self) -> bool:
         # Without a key we can only run in mock mode.
-        return self.llm_mock or not self.gemini_api_key
+        return self.llm_mock or not self.openai_api_key
 
     @property
     def is_production(self) -> bool:
@@ -119,13 +119,13 @@ def _resolve(p: str, default: Path) -> Path:
 @lru_cache
 def get_settings() -> Settings:
     s = Settings(
-        gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip(),
-        strong_model=os.getenv("STRONG_MODEL", "gemini-4-carbon").strip(),
+        openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
+        strong_model=os.getenv("OPENAI_STRONG_MODEL", "gpt-6-luna").strip(),
         strong_fallbacks=_list(
-            os.getenv("STRONG_FALLBACK_MODELS", "gemini-3.8-flash,gemini-3.5-flash,gemini-3.5-flash-lite")
+            os.getenv("OPENAI_STRONG_FALLBACK_MODELS", "")
         ),
-        cheap_model=os.getenv("CHEAP_MODEL", "gemini-3.5-flash-lite").strip(),
-        cheap_fallbacks=_list(os.getenv("CHEAP_FALLBACK_MODELS", "gemini-3.1-flash-lite,gemini-3.6-flash")),
+        cheap_model=os.getenv("OPENAI_CHEAP_MODEL", "gpt-6-luna").strip(),
+        cheap_fallbacks=_list(os.getenv("OPENAI_CHEAP_FALLBACK_MODELS", "")),
         llm_mock=_flag("LLM_MOCK"),
         llm_cache=_flag("LLM_CACHE", "1"),
         max_concurrency=int(os.getenv("LLM_MAX_CONCURRENCY", "4")),

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Start backend (FastAPI :8000) and frontend (Vite :5173) together. Ctrl+C stops both.
-# Usage: scripts/dev.sh            # uses .env (real Gemini if GEMINI_API_KEY is set)
+# Usage: scripts/dev.sh            # uses .env (real OpenAI if OPENAI_API_KEY is set)
 #        LLM_MOCK=1 scripts/dev.sh # offline mock mode
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
