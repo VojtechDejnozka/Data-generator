@@ -116,11 +116,11 @@ export default function StoryTimeline({ chain, distractors, knobs, periodStart, 
           const from = timed && r.t !== null ? pos(r.t) : 0
           const isActive = active === s.id
           return (
-            <li key={s.id} className={`${lane} -mx-3 px-3 rounded-lg transition-colors ${isActive ? 'bg-blue-50/70' : ''}`}
+            <li key={s.id} className={`${lane} -mx-3 px-3 rounded-lg transition-colors ${isActive ? 'bg-slate-50' : ''}`}
               onMouseEnter={() => onActive(s.id)} onMouseLeave={() => onActive(null)}
               onFocus={() => onActive(s.id)} onBlur={() => onActive(null)}>
               <div className="flex gap-3 min-w-0">
-                <span className="mono text-xs font-semibold text-blue-700 pt-1.5 w-5 shrink-0">{s.id}</span>
+                <span className="text-xs font-semibold text-ink pt-1.5 tabular-nums w-5 shrink-0">{s.id}</span>
                 <div className="min-w-0 flex-1">
                   <textarea rows={1} className="input-quiet field-sizing-content resize-none font-medium text-[15px] leading-snug text-slate-900" aria-label={`Mechanismus kroku ${s.id}`}
                     value={s.mechanism} onChange={(e) => onMechanism(i, e.target.value)} />
@@ -128,14 +128,14 @@ export default function StoryTimeline({ chain, distractors, knobs, periodStart, 
                   <p className="sr-only">{startText(s, r)}, {RAMP[s.ramp_profile] ?? s.ramp_profile}</p>
                 </div>
               </div>
-              {timed && <div className="relative h-10 ml-8 lg:ml-0 rounded-md bg-slate-50/80 overflow-hidden" title={`${startText(s, r)}, ${RAMP[s.ramp_profile] ?? s.ramp_profile}`}>
+              {timed && <div className="relative h-10 ml-8 lg:ml-0 rounded bg-slate-50 overflow-hidden" title={`${startText(s, r)}, ${RAMP[s.ramp_profile] ?? s.ramp_profile}`}>
                 <Gridlines ticks={ticks} />
                 <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="absolute inset-0 w-full h-full reveal" style={{ animationDelay: `${120 + i * 110}ms` }} aria-hidden="true">
-                  <path d={`${rampPath(s.ramp_profile, from, (rampDays * DAY) / span)} L${W},${H} L0,${H} Z`} fill="rgb(37 99 235 / 0.12)" />
-                  <path d={rampPath(s.ramp_profile, from, (rampDays * DAY) / span)} fill="none" stroke="#2563eb" strokeWidth="2" vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
+                  <path d={`${rampPath(s.ramp_profile, from, (rampDays * DAY) / span)} L${W},${H} L0,${H} Z`} fill="#ffe14d" fillOpacity="0.55" />
+                  <path d={rampPath(s.ramp_profile, from, (rampDays * DAY) / span)} fill="none" stroke="#23262b" strokeWidth="1.5" vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
                 </svg>
-                <span aria-hidden="true" className={`absolute top-1 bottom-1 w-0 border-l-2 ${r.how === 'date' ? 'border-blue-700' : 'border-blue-700 border-dashed'}`} style={{ left: `${from * 100}%` }} />
-                {r.t !== null && <span aria-hidden="true" className={`absolute top-0.5 text-[10px] text-blue-800 tabular-nums ${from > 0.8 ? '-translate-x-full -ml-1' : 'ml-1'}`} style={{ left: `${from * 100}%` }}>{fmtShort(r.t)}</span>}
+                <span aria-hidden="true" className={`absolute top-1 bottom-1 w-0 border-l ${r.how === 'date' ? 'border-ink' : 'border-ink border-dashed'}`} style={{ left: `${from * 100}%` }} />
+                {r.t !== null && <span aria-hidden="true" className={`absolute top-0.5 text-[10px] text-ink tabular-nums ${from > 0.8 ? '-translate-x-full -ml-1' : 'ml-1'}`} style={{ left: `${from * 100}%` }}>{fmtShort(r.t)}</span>}
               </div>}
             </li>
           )
@@ -148,10 +148,10 @@ export default function StoryTimeline({ chain, distractors, knobs, periodStart, 
           {distractors.map((d, i) => {
             const a = parseDate(d.start)
             return (
-              <li key={d.id} title={d.description} className="inline-flex items-center gap-1.5 rounded-md border border-amber-700/25 bg-amber-50/60 pl-2.5 pr-1 py-0.5 text-sm">
+              <li key={d.id} title={d.description} className="inline-flex items-center gap-1.5 rounded-md border border-dashed border-slate-300 pl-2.5 pr-1 py-0.5 text-sm">
                 <span className="text-slate-800">{d.name}</span>
-                <span className="text-xs text-amber-800">{DISTRACTOR_KIND[d.kind] ?? d.kind}{a !== null && `, od ${fmtShort(a)}`}</span>
-                <button type="button" className="px-1 text-slate-400 hover:text-red-700 cursor-pointer rounded focus-visible:outline-2 focus-visible:outline-blue-500"
+                <span className="text-xs text-slate-500">{DISTRACTOR_KIND[d.kind] ?? d.kind}{a !== null && `, od ${fmtShort(a)}`}</span>
+                <button type="button" className="px-1 text-slate-400 hover:text-red-700 cursor-pointer rounded focus-visible:outline-2 focus-visible:outline-ink"
                   onClick={() => onRemoveDistractor(i)} aria-label={`Odebrat ${d.name}`}>×</button>
               </li>
             )

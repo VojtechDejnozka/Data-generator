@@ -36,7 +36,7 @@ export default function DocRunView() {
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex-1 min-w-0">
           <div className="text-xs text-slate-500 mono">{run.run_id}{spec.source_run_id && <> · fakta z tabulky {spec.source_table}{spec.source_filter_col && ` (${spec.source_filter_col} = ${spec.source_filter_val})`} běhu <Link className="text-blue-700" to={`/runs/${spec.source_run_id}?tab=files`}>{spec.source_run_id}</Link></>}</div>
-          <h1 className="text-xl font-bold truncate">{spec.name} <span className="text-slate-500 font-normal text-base">– {docs.length} × {spec.document_type} ({spec.format.toUpperCase()})</span></h1>
+          <h1 className="text-[28px] leading-tight font-semibold tracking-[-0.015em] truncate">{spec.name} <span className="text-slate-500 font-normal text-base">– {docs.length} × {spec.document_type} ({spec.format.toUpperCase()})</span></h1>
         </div>
         <VerdictChip v={v.verdict} />
         <span className="chip bg-slate-100">{run.checks_summary.passed}/{run.checks_summary.total} prošlo kontrolami</span>

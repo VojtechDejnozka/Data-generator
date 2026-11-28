@@ -5,8 +5,8 @@ import { useMemo, useRef, useState } from 'react'
 import { type Json } from '../api'
 import { R, layoutGraph } from './causalGraphLayout'
 
-const TEXT = '#191919'
-const TEXT2 = '#666666'
+const TEXT = '#23262b'
+const TEXT2 = '#6b7078'
 const EDGE = '#a8a8a8'
 const SURFACE = '#ffffff'
 

@@ -6,8 +6,8 @@ import { fmt, type Json } from '../api'
 
 import { SERIES } from './palette'
 export { SERIES }
-const TEXT2 = '#666666'
-const GRID = '#e8e8e8'
+const TEXT2 = '#6b7078'
+const GRID = '#e3e5e8'
 export const B_SUFFIX = ' · B'
 
 export interface ChartSpec {
@@ -93,7 +93,7 @@ function buildOption(spec: ChartSpec): echarts.EChartsCoreOption {
     valueFormatter: (v: Json) => fmt(v),
   }
   const legend = series.length > 1
-    ? { type: 'scroll', top: 0, textStyle: { color: '#191919', fontSize: 11 }, itemWidth: 14, itemHeight: 8 }
+    ? { type: 'scroll', top: 0, textStyle: { color: '#23262b', fontSize: 11 }, itemWidth: 14, itemHeight: 8 }
     : undefined
 
   if (spec.chart === 'pie') {
@@ -101,7 +101,7 @@ function buildOption(spec: ChartSpec): echarts.EChartsCoreOption {
       color: SERIES, tooltip: { trigger: 'item', valueFormatter: (v: Json) => fmt(v) },
       series: [{
         type: 'pie', radius: ['45%', '72%'], itemStyle: { borderColor: '#fff', borderWidth: 2 },
-        label: { formatter: '{b}: {d} %', color: '#191919' },
+        label: { formatter: '{b}: {d} %', color: '#23262b' },
         data: xs.map((x, i) => ({ name: String(x), value: series[0]?.data[i] ?? 0 })),
       }],
     }
@@ -190,7 +190,7 @@ export default function Chart({ spec, height = 300 }: { spec: ChartSpec; height?
   useEffect(() => {
     if (!ref.current || !option || asTable) return
     const chart = echarts.init(ref.current, undefined, { renderer: 'canvas' })
-    chart.setOption(option, true)
+    chart.setOption({ textStyle: { fontFamily: '"Schibsted Grotesk", system-ui, sans-serif' }, ...option }, true)
     const ro = new ResizeObserver(() => chart.resize())
     ro.observe(ref.current)
     return () => { ro.disconnect(); chart.dispose() }
