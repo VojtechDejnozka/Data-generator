@@ -110,7 +110,7 @@ export default function DocsHome() {
               <tr key={r.run_id}>
                 <td className="mono text-xs">{r.run_id}</td><td>{r.name}{r.mock && <span className="chip bg-amber-50 text-amber-800 ml-2">mock</span>}</td>
                 <td>{r.document_type}</td><td className="uppercase text-xs">{r.format}</td><td>{r.row_counts?.documents ?? r.count}</td>
-                <td className="text-xs">{r.created_at?.replace('T', ' ')}</td>
+                <td className="text-xs">{r.created_at ? new Date(r.created_at).toLocaleString('cs-CZ', { dateStyle: 'short', timeStyle: 'short' }) : '–'}</td>
                 <td>{r.status === 'running' ? <span className="chip bg-blue-50 text-blue-700">běží</span> : <VerdictChip v={r.verdict?.verdict} />}</td>
                 <td><Link className="btn" to={`/docs/runs/${r.run_id}`}>Otevřít</Link></td>
               </tr>))}</tbody>
