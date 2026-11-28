@@ -63,7 +63,7 @@ export default function DocsHome() {
           <h1 className="text-[28px] leading-tight font-semibold tracking-[-0.015em]">Generátor dokumentů</h1>
           <p className="text-sm text-slate-600 max-w-4xl">
             Libovolné nestrukturované výstupy – lékařské zprávy, dopisy, e-maily, posudky, reporty… Stejná pipeline jako u dat:
-            OpenAI navrhne <b>fakta</b> (strukturovaný záznam ke každému dokumentu), <b>sekce</b> a volitelně skrytý <b>vzor</b>,
+            LLM navrhne <b>fakta</b> (strukturovaný záznam ke každému dokumentu), <b>sekce</b> a volitelně skrytý <b>vzor</b>,
             CHEAP model napíše texty z faktů, deterministické kontroly ověří, že text fakta skutečně obsahuje, a STRONG model výsledek validuje.
           </p>
         </div>
@@ -98,7 +98,7 @@ export default function DocsHome() {
           </div>
         )}
         {err && <div className="text-sm text-red-700">{err}</div>}
-        <button className="btn btn-primary text-base px-5 py-2" onClick={submit}>Navrhnout dokumenty (OpenAI) →</button>
+        <button className="btn btn-primary text-base px-5 py-2" onClick={submit}>Navrhnout dokumenty (AI) →</button>
       </div>
 
       <div className="card">
@@ -110,7 +110,7 @@ export default function DocsHome() {
               <tr key={r.run_id}>
                 <td className="mono text-xs">{r.run_id}</td><td>{r.name}{r.mock && <span className="chip bg-amber-50 text-amber-800 ml-2">mock</span>}</td>
                 <td>{r.document_type}</td><td className="uppercase text-xs">{r.format}</td><td>{r.row_counts?.documents ?? r.count}</td>
-                <td className="text-xs">{r.created_at?.replace('T', ' ')}</td>
+                <td className="text-xs">{r.created_at ? new Date(r.created_at).toLocaleString('cs-CZ', { dateStyle: 'short', timeStyle: 'short' }) : '–'}</td>
                 <td>{r.status === 'running' ? <span className="chip bg-blue-50 text-blue-700">běží</span> : <VerdictChip v={r.verdict?.verdict} />}</td>
                 <td><Link className="btn" to={`/docs/runs/${r.run_id}`}>Otevřít</Link></td>
               </tr>))}</tbody>

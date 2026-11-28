@@ -12,3 +12,6 @@ runs/
 .cache/
 backend/runs/
 backend/.cache/
+.vercel
+.env*
+!.env.example

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { api, fmt, type Json } from '../api'
+import { api, download, downloadUrl, fmt, type Json } from '../api'
 import { ResultTable } from '../components/Chart'
 import { SqlTab } from '../components/Tabs'
 import { VerdictChip } from './Home'
@@ -30,7 +30,6 @@ export default function DocRunView() {
     tab: 'files', ...(sourceTable ? { table: sourceTable } : {}),
   })}` : null
   const docs = run.documents as Json[]
-  const fileUrl = (f: string, dl = false) => `/api/docs/runs/${rid}/files/${f}${dl ? '?download=true' : ''}`
   const selDoc = docs.find((d) => d.doc_id === sel)
   const inlineFile = ['pdf', 'html', 'txt', 'md', 'json'].includes(spec.format)
   const affected: number[] = gt?.affected_doc_ids ?? []
@@ -47,8 +46,8 @@ export default function DocRunView() {
         <span className="chip bg-slate-100">{run.checks_summary.passed}/{run.checks_summary.total} prošlo kontrolami</span>
         {run.mock && <span className="chip bg-amber-50 text-amber-800 border border-amber-200">mock LLM</span>}
         {sourceUrl && <Link className="btn" to={sourceUrl}>Zpět ke zdrojovému běhu</Link>}
-        <a className="btn" href={`/api/docs/runs/${rid}/export.zip`}>⬇ Vše (ZIP)</a>
-        <a className="btn" href={`/api/runs/${rid}/db`}>⬇ Fakta (SQLite)</a>
+        <button className="btn" onClick={() => void download(rid!, 'docs_zip').catch((e) => setErr(String(e)))}>⬇ Vše (ZIP)</button>
+        <button className="btn" onClick={() => void download(rid!, 'db').catch((e) => setErr(String(e)))}>⬇ Fakta (SQLite)</button>
       </div>
       <div className="flex border-b border-slate-200">
         {[['docs', 'Dokumenty'], ['facts', 'Fakta'], ['sql', 'SQL nad fakty'], ['validation', 'Validace & kontroly'], ['truth', 'Ground truth'], ['log', 'Log & tokeny']].map(([id, l]) => (
@@ -71,13 +70,13 @@ export default function DocRunView() {
           </div>
           <div className="lg:col-span-6 card p-2">
             {selDoc && (inlineFile
-              ? <iframe key={selDoc.file} title={selDoc.title} src={fileUrl(selDoc.file)} className="w-full h-[76vh] rounded border-0 bg-white" />
+              ? <InlineFile key={selDoc.file} runId={rid!} file={selDoc.file} title={selDoc.title} pdf={spec.format === 'pdf'} />
               : doc && <iframe title="preview" srcDoc={doc.html} className="w-full h-[76vh] rounded border-0" />)}
           </div>
           <div className="lg:col-span-3 space-y-3">
             {selDoc && (
               <div className="card p-3 text-sm space-y-2">
-                <a className="btn w-full justify-center" href={fileUrl(selDoc.file, true)}>⬇ Stáhnout {selDoc.file}</a>
+                <button className="btn w-full justify-center" onClick={() => void download(rid!, 'doc_file', { file: selDoc.file }).catch((e) => setErr(String(e)))}>⬇ Stáhnout {selDoc.file}</button>
                 <div className={selDoc.checks_ok ? 'text-emerald-700' : 'text-red-700'}>
                   {selDoc.checks_ok ? '✓ Všechna povinná fakta v textu, sekce kompletní' : selDoc.issues.map((x: string) => <div key={x}>✖ {x}</div>)}
                 </div>
@@ -147,4 +146,19 @@ export default function DocRunView() {
       )}
     </div>
   )
+}
+
+/** Inline preview through a short-lived URL (an iframe cannot send the Authorization header). */
+function InlineFile({ runId, file, title, pdf }: { runId: string; file: string; title: string; pdf: boolean }) {
+  const [url, setUrl] = useState<string | null>(null)
+  const [failed, setFailed] = useState(false)
+  useEffect(() => {
+    downloadUrl(runId, 'doc_file', { file, inline: true }).then((r) => setUrl(r.url)).catch(() => setFailed(true))
+  }, [runId, file])
+  if (failed) return <div className="text-sm text-red-700 p-3">Náhled se nepodařilo načíst.</div>
+  if (!url) return <div className="text-sm text-slate-500 p-3">Načítám náhled…</div>
+  // Generated HTML/text never gets script access (sandbox); the browser's PDF viewer needs an unsandboxed frame.
+  return pdf
+    ? <iframe title={title} src={url} className="w-full h-[76vh] rounded border-0 bg-white" />
+    : <iframe title={title} src={url} sandbox="" className="w-full h-[76vh] rounded border-0 bg-white" />
 }

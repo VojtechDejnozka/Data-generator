@@ -129,7 +129,7 @@ def test_plan_story_reports_failures_readably(monkeypatch):
             raise LLMError(log)
 
     monkeypatch.setattr(planner, "get_llm", lambda: Failing())
-    with pytest.raises(RuntimeError, match="OpenAI nevrátilo spustitelný kauzální model"):
+    with pytest.raises(RuntimeError, match="LLM nevrátilo spustitelný kauzální model"):
         run(planner.plan_story(ScenarioInput(story="Příběh o třech nemocnicích a čekacích dobách.", engine="scm")))
 
 

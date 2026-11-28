@@ -82,7 +82,7 @@ export default function FilesFromData({ runId, initialTable }: { runId: string; 
           </div>
           <p className="text-xs text-slate-500">Řádky se vyberou náhodně podle seedu (reprodukovatelně). Příběh v datech se do souborů přenese sám – např. faktury problémového dodavatele budou mít pozdější data dodání.</p>
           {err && <div className="text-sm text-red-700">{err}</div>}
-          <button className="btn btn-primary" disabled={!table || description.trim().length < 10} onClick={submit}>Navrhnout soubory (OpenAI) →</button>
+          <button className="btn btn-primary" disabled={!table || description.trim().length < 10} onClick={submit}>Navrhnout soubory (AI) →</button>
         </div>
         {existing.length > 0 && (
           <div className="card p-4">
