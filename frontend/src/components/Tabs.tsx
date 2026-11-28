@@ -235,7 +235,7 @@ function ScmGroundTruth({ gt }: { gt: Json }) {
     </section>
     {events.length > 0 && <section className="card p-4 space-y-2">
       <h3 className="font-semibold">Události v datech</h3>
-      <ResultTable columns={['Událost', 'Od', 'Do', 'Zasažené řádky podle proměnné', 'Projevila se']}
+      <ResultTable columns={['Událost', 'Od', 'Do', 'Počet vybraných řádků podle proměnné', 'Vybrán alespoň jeden řádek']}
         rows={events.map((e) => [
           e.description || e.event_id, e.first_date ?? e.first_step, e.last_date ?? e.last_step,
           Object.entries(e.affected_rows ?? {}).map(([variable, count]) => `${variable}: ${fmt(count)}`).join(', ') || null,

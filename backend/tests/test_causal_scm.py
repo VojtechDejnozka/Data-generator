@@ -143,6 +143,42 @@ def test_event_changes_mechanism_only_for_affected_entities_after_start():
     assert ev["first_step"] == 20 and ev["affected_entities"] == {"shops": [2]}
 
 
+@pytest.mark.parametrize("params", [{"shift": 4.5}, {}, {"delta": "4.5"}, {"delta": True}, {"delta": np.inf}])
+def test_invalid_shift_fails_validation_and_execution(params):
+    spec = linear_xy(5)
+    event = EventSpec(event_id="supplier_delay", affected_variables=["x"], intervention_type="shift",
+                      intervention_parameters=params)
+    spec.events.append(event)
+    errors = validate_spec(spec).errors
+    assert any(e.target == "event:supplier_delay" and "'delta'" in e.explanation for e in errors)
+    with pytest.raises(ValueError, match="supplier_delay.*delta"):
+        generate_world(spec)
+
+
+@pytest.mark.parametrize(("kind", "params"), [
+    ("scale", {"scale": 2}), ("set_value", {}), ("seasonal", {"period": 7}),
+    ("seasonal", {"amplitude": 2, "period": 0}), ("param_change", {"param": "intercept"}),
+    ("param_change", {"param": "intercept", "value": 1, "factor": 2}),
+])
+def test_invalid_intervention_parameters_are_reported(kind, params):
+    spec = linear_xy(5)
+    spec.events.append(EventSpec(event_id="bad_event", affected_variables=["y"], intervention_type=kind,
+                                 intervention_parameters=params))
+    assert any(e.check_id == "event.params" for e in validate_spec(spec).errors)
+
+
+def test_shift_changes_only_selected_rows_by_delta():
+    spec = linear_xy(10)
+    before = generate_world(spec).internals["units"]
+    spec.events.append(EventSpec(event_id="supplier_delay", affected_variables=["x"], affected_entities="unit_id == 3",
+                                 intervention_type="shift", intervention_parameters={"delta": 4.5}))
+    assert not validate_spec(spec).errors
+    after = generate_world(spec).internals["units"]
+    selected = before["unit_id"] == 3
+    assert selected.sum() == 1
+    assert np.allclose(after["x"] - before["x"], 4.5 * selected)
+
+
 def test_set_value_intervention_vs_measurement_error_are_distinct():
     spec = linear_xy(400)
     do = EventSpec(event_id="do_x", affected_variables=["x"], intervention_type="set_value",

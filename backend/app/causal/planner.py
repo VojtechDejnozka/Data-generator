@@ -52,6 +52,10 @@ Contract essentials:
   student_t(df, loc, scale), constant(value).
 - events: story changes over time: set_value | shift | scale | param_change (param path in mechanism.params) |
   seasonal, with affected_entities filter on key columns (e.g. 'supplier_id == 1'), start_time, ramp_profile.
+  For a shift, intervention_parameters must contain a numeric delta in the variable's units.
+  Example: "intervention_type": "shift", "intervention_parameters": {"delta": 4.5}.
+  scale requires factor, set_value requires value, seasonal requires amplitude (optional positive period,
+  phase and mode add|multiply), param_change requires param and exactly one of value, delta or factor.
   An intervention on a variable differs from a change of its mechanism; conditioning is not an intervention.
 - ground_truth.story_facts: kind edge (source, target, expected_direction) | event | root_cause (event_id,
   entity_ids {entity_id: [ids]}, evidence_variables = observed variables where it is visible) with importance.

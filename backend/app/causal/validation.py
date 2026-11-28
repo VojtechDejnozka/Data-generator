@@ -188,6 +188,11 @@ def validate_spec(spec: SCMSpec) -> ValidationReport:
         err("graph.cycle", "graph", str(ex), "break the loop with a lagged parent (X_t -> Y_t -> X_t+1)")
     for ev in spec.events:
         tgt = f"event:{ev.event_id}"
+        try:
+            ev.check_parameters()
+        except ValueError as ex:
+            err("event.params", tgt, str(ex))
+            continue
         for vid in ev.affected_variables:
             v = spec.variable(vid)
             if not v:
