@@ -43,7 +43,7 @@ export default function Compare() {
   return (
     <div className="space-y-5">
       <div className="card p-5">
-        <h1 className="text-xl font-bold mb-3">Porovnání běhů (what-if)</h1>
+        <h1 className="text-[28px] leading-tight font-semibold tracking-[-0.015em] mb-3">Porovnání běhů (what-if)</h1>
         <div className="grid md:grid-cols-2 gap-4 text-sm">
           {(['a', 'b'] as const).map((k) => (
             <div key={k} className="border border-slate-200 rounded-lg p-3">

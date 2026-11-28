@@ -42,7 +42,7 @@ export default function DocSpecReview() {
 
   if (job) {
     return (
-      <div className="max-w-4xl mx-auto">
+      <div className="max-w-4xl">
         <JobProgress jobId={job.id} title={job.kind === 'run' ? 'Generuji dokumenty' : 'Přeplánování'}
           phases={job.kind === 'run' ? DOC_PHASES : [['plan', 'Přeplánování'], ['done', 'Hotovo']]}
           onDone={(r) => { if (job.kind === 'run') nav(`/docs/runs/${r.run_id}`); else { setJob(null); load() } }} />
@@ -54,7 +54,7 @@ export default function DocSpecReview() {
     <div className="grid lg:grid-cols-3 gap-6">
       <div className="lg:col-span-2 space-y-5">
         <div className="card p-5 space-y-3">
-          <div className="flex items-center gap-3"><h1 className="text-xl font-bold flex-1">Review specifikace dokumentů</h1>
+          <div className="flex items-center gap-3"><h1 className="text-[28px] leading-tight font-semibold tracking-[-0.015em] flex-1">Review specifikace dokumentů</h1>
             <span className="chip bg-slate-100">kolo {session.round}</span>
             {fromSource && <span className="chip bg-violet-50 text-violet-800 border border-violet-200">fakta z {spec.source_table} ({spec.source_run_id})</span>}</div>
           <div className="grid md:grid-cols-4 gap-3">

@@ -11,7 +11,7 @@ export function EvidenceCard({ e, onSql }: { e: Json; onSql?: (sql: string) => v
           <div className="font-medium text-sm">{e.title}</div>
           {e.expected && <div className="text-xs text-slate-500">Očekávání: {e.expected}</div>}
         </div>
-        {!e.ok && <span className="chip bg-red-50 text-red-700">dotaz selhal</span>}
+        {!e.ok && <span className="text-xs font-medium text-red-700">Dotaz selhal</span>}
       </div>
       {e.ok ? <Chart spec={e} height={e.chart === 'bar' ? 260 : 240} /> : <div className="text-xs text-red-700 mono">{e.error}</div>}
       <details className="mt-1">
@@ -71,11 +71,11 @@ export default function ReportTab({ report, onSql }: { report: Json; onSql: (sql
 
       <section className="space-y-4">
         <div className="flex items-center gap-3">
-          <h2 className="text-lg font-bold flex-1">3 · Rekonstrukce příběhu z dat – krok za krokem</h2>
+          <h2 className="text-[21px] font-semibold tracking-[-0.01em] flex-1">3 · Rekonstrukce příběhu z dat – krok za krokem</h2>
           <button className="btn" disabled={busy} onClick={askAI}>{busy ? 'Generuji…' : '✦ AI komentář'}</button>
         </div>
         {comment && (
-          <div className="card p-4 bg-blue-50/40 border-blue-200">
+          <div className="border-l-2 border-mark pl-4 py-1">
             <div className="font-semibold mb-1">{comment.headline}</div>
             {comment.paragraphs.map((p: string, i: number) => <p key={i} className="text-sm text-slate-700 mb-1">{p}</p>)}
           </div>
@@ -85,25 +85,25 @@ export default function ReportTab({ report, onSql }: { report: Json; onSql: (sql
           const sig = s.signal
           const ok = det?.detectable ?? sig?.detectable
           return (
-            <div key={s.step.id} className="card p-4">
+            <div key={s.step.id} className="border-t border-slate-300 pt-5 pb-3">
               <div className="flex items-start gap-3 mb-3">
-                <div className="w-8 h-8 rounded-full bg-blue-600 text-white grid place-items-center font-bold shrink-0">{i + 1}</div>
+                <div className="w-7 text-[21px] leading-none font-semibold tabular-nums shrink-0 pt-0.5">{i + 1}</div>
                 <div className="flex-1">
-                  <div className="font-semibold">{s.step.mechanism}</div>
+                  <div className="text-[17px] font-semibold leading-snug"><span className={ok ? 'mark' : ''}>{s.step.mechanism}</span></div>
                   <div className="text-xs text-slate-500">Tabulky: {s.step.tables.join(', ') || '–'} · start: {s.step.start} · očekávaný dopad: {s.step.expected_impact}</div>
                 </div>
                 {ok !== undefined && (
-                  <span className={`chip border ${ok ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-slate-50 text-slate-600 border-slate-200'}`}>
-                    {ok ? '✓ dohledatelné' : '✖ nedohledatelné'}{det?.confidence !== undefined && ` · ${Math.round(det.confidence * 100)} %`}
+                  <span className={`text-xs font-medium whitespace-nowrap pt-1 ${ok ? 'text-emerald-800' : 'text-slate-500'}`}>
+                    {ok ? '✓ dohledatelné' : '✕ nedohledatelné'}{det?.confidence !== undefined && `, ${Math.round(det.confidence * 100)} %`}
                   </span>
                 )}
               </div>
               {(sig?.comment || det?.comment) && (
-                <div className="text-sm bg-slate-50 border border-slate-200 rounded p-2 mb-3">
+                <div className="text-sm border-l-2 border-slate-300 pl-3 md:ml-10 mb-4">
                   {sig?.comment}{det?.comment && det.comment !== sig?.comment && <div className="text-xs text-slate-600 mt-1">Validátor: {det.comment}</div>}
                 </div>
               )}
-              <div className="grid lg:grid-cols-2 gap-3">
+              <div className="grid lg:grid-cols-2 gap-3 md:ml-10">
                 {s.evidence.map((e: Json) => <EvidenceCard key={e.id} e={e} onSql={onSql} />)}
               </div>
             </div>
@@ -111,7 +111,7 @@ export default function ReportTab({ report, onSql }: { report: Json; onSql: (sql
         })}
         {report.other_evidence.length > 0 && (
           <div className="card p-4"><h3 className="font-semibold mb-2">Další důkazy</h3>
-            <div className="grid lg:grid-cols-2 gap-3">{report.other_evidence.map((e: Json) => <EvidenceCard key={e.id} e={e} onSql={onSql} />)}</div>
+            <div className="grid lg:grid-cols-2 gap-3 md:ml-10">{report.other_evidence.map((e: Json) => <EvidenceCard key={e.id} e={e} onSql={onSql} />)}</div>
           </div>
         )}
       </section>
@@ -120,7 +120,7 @@ export default function ReportTab({ report, onSql }: { report: Json; onSql: (sql
         <h3 className="font-semibold mb-2">Šum a distraktory zahrnuté v datech</h3>
         <div className="grid md:grid-cols-3 gap-2">
           {report.story.distractors.map((d: Json) => (
-            <div key={d.id} className="border border-slate-200 rounded p-2 text-sm"><b>{d.name}</b> <span className="text-xs text-slate-500">({d.kind})</span><div className="text-xs text-slate-600">{d.description}</div></div>
+            <div key={d.id} className="border border-dashed border-slate-300 rounded p-2 text-sm"><b>{d.name}</b> <span className="text-xs text-slate-500">({d.kind})</span><div className="text-xs text-slate-600">{d.description}</div></div>
           ))}
         </div>
       </section>

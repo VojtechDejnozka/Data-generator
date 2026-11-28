@@ -48,7 +48,7 @@ export default function DocsHome() {
 
   if (job) {
     return (
-      <div className="max-w-3xl mx-auto space-y-4">
+      <div className="max-w-3xl space-y-4">
         <JobProgress jobId={job} title="STRONG model navrhuje specifikaci dokumentů" phases={[['plan', 'Návrh'], ['done', 'Hotovo']]}
           onDone={(r) => nav(`/docs/plan/${r.session_id}`)} />
         <button className="btn" onClick={() => setJob(null)}>Zpět</button>
@@ -60,7 +60,7 @@ export default function DocsHome() {
     <div className="space-y-6">
       <div className="card p-6 space-y-4">
         <div>
-          <h1 className="text-xl font-bold">Generátor dokumentů</h1>
+          <h1 className="text-[28px] leading-tight font-semibold tracking-[-0.015em]">Generátor dokumentů</h1>
           <p className="text-sm text-slate-600 max-w-4xl">
             Libovolné nestrukturované výstupy – lékařské zprávy, dopisy, e-maily, posudky, reporty… Stejná pipeline jako u dat:
             OpenAI navrhne <b>fakta</b> (strukturovaný záznam ke každému dokumentu), <b>sekce</b> a volitelně skrytý <b>vzor</b>,
