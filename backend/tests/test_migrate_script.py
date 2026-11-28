@@ -38,6 +38,7 @@ def test_migrate(tmp_path, monkeypatch):
     b = store_meta.get_run("20260102-000000-bbbb", None)
     assert a["user_id"] == OWNER and a["is_preset"] and "data.sqlite" in a["files"]
     assert b["parent_run_id"] == "20260101-000000-aaaa" and not b.get("is_preset")
+    assert a["created_at"].startswith("2026-01-0")  # original creation time kept
     assert store_meta.get_run("20260103-000000-cccc", None) is None  # unfinished runs are skipped
     assert (tmp_path / "bucket" / OWNER / "20260102-000000-bbbb" / "data.sqlite.gz").exists()
     assert mod.main() == 0  # idempotent

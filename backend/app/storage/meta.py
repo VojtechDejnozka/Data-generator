@@ -396,7 +396,8 @@ class SupabaseMetaStore:
         return [r for r in rows if visible(r, viewer)]
 
     def upsert_run(self, row: dict[str, Any]) -> None:
-        body = {k: v for k, v in row.items() if k in RUN_FIELDS and k not in ("created_at", "updated_at")}
+        # created_at is kept when given (migrated runs keep their original time); updated_at is set by trigger
+        body = {k: v for k, v in row.items() if k in RUN_FIELDS and k != "updated_at"}
         self._req("POST", "/runs", params={"on_conflict": "id"}, json_body=body,
                   prefer="resolution=merge-duplicates,return=minimal")
 

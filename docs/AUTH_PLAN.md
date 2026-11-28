@@ -1,6 +1,6 @@
 # Story2Data – autentizace, uživatelské účty a nasazení (Supabase + Vercel)
 
-Stav: plán schválený k implementaci (fáze 1). Dokumentace Supabase a Vercelu ověřena 2026-11-28
+Stav: **implementováno** (fáze 1–7, větev `feat/auth-supabase`); stav ověření viz kap. 10. Dokumentace Supabase a Vercelu ověřena 2026-11-28
 (zdroje v kap. 9). Kde jsem něco ověřit nemohl, je to označené **[neověřeno]**.
 
 ---
@@ -101,8 +101,9 @@ Vercel ─ služba "frontend" (statický build)   ─ služba "backend" (FastAPI
    instancemi). V mock režimu se tokeny do kvóty nepočítají (`QUOTA_COUNT_MOCK=0`), běhy ano.
    Překročení → HTTP 429 s českou zprávou a `quota` objektem; UI zobrazuje zbývající kvótu v hlavičce.
 9. **Registrace** `SIGNUP_MODE = open | email_allowlist | invite_only` (výchozí `email_allowlist`):
-   vynucuje backend při každém požadavku (účet mimo allowlist/pozvánku dostane 403 „Účet není povolen“)
-   a trigger `handle_new_user` nastaví `profiles.status` (`active`/`pending`). Allowlist: `SIGNUP_ALLOWLIST`
+   vynucuje backend při každém požadavku (účet mimo allowlist/pozvánku dostane 403) podle env konfigurace;
+   trigger `handle_new_user` založí profil a nastaví `profiles.approved = true` pro pozvané (`auth.users.invited_at`).
+   Admin může účet schválit (`approved`) i mimo allowlist. Allowlist: `SIGNUP_ALLOWLIST`
    (e-maily a `@domena.cz`). `invite_only`: aktivní jsou jen pozvaní (admin endpoint volá Supabase
    `invite`) – doporučeno i vypnout „Allow new users to sign up“ v dashboardu. Admin může účet zablokovat
    (`profiles.status = 'blocked'`), backend ho pak odmítá; pro okamžité odříznutí od Data API admin akce
@@ -121,9 +122,9 @@ Vercel ─ služba "frontend" (statický build)   ─ služba "backend" (FastAPI
 
 | tabulka | sloupce (hlavní) | RLS (authenticated) |
 |---|---|---|
-| `profiles` | `id uuid pk → auth.users`, `email`, `display_name`, `role ('user'|'admin')`, `status ('active'|'pending'|'blocked')`, `created_at` | SELECT vlastní (admin všechny); UPDATE vlastní jen `display_name` (sloupcový GRANT) |
+| `profiles` | `id uuid pk → auth.users`, `email`, `display_name`, `role ('user'|'admin')`, `status ('active'|'blocked')`, `approved bool`, `created_at` | SELECT vlastní (admin všechny); UPDATE vlastní jen `display_name` (sloupcový GRANT) |
 | `runs` | `id text pk`, `user_id`, `kind`, `engine`, `label`, `name`, `status`, `parent_run_id`, `is_preset`, `share_token`, `summary jsonb` (verdikt, row_counts, knob_values, mock, usage…), `files jsonb`, `created_at`, `updated_at` | SELECT vlastní nebo `is_preset` |
-| `jobs` | `id text pk`, `user_id`, `kind`, `run_id`, `status`, `stage`, `phase`, `progress`, `state jsonb`, `events jsonb`, `result jsonb`, `error`, `cancel_requested`, `lease_until`, `created_at`, `updated_at` | SELECT vlastní |
+| `jobs` | `id text pk`, `user_id`, `kind`, `run_id`, `status`, `stage`, `phase`, `progress`, `state jsonb`, `events jsonb`, `result jsonb`, `error`, `cancel_requested`, `lease_until`, `lease_holder`, `attempts`, `created_at`, `updated_at` | SELECT vlastní |
 | `plan_sessions` | `id text pk`, `user_id`, `kind`, `data jsonb`, `created_at`, `updated_at` | SELECT vlastní |
 | `usage` | `id bigint`, `user_id`, `job_id`, `run_id`, `kind`, `calls`, `tokens`, `cost_usd`, `mock`, `created_at` | SELECT vlastní (admin všechny) |
 | storage `runs` | `{user_id}/{run_id}/…` | SELECT vlastní složka nebo presetový běh |
@@ -145,15 +146,17 @@ Trigger `on_auth_user_created` → `public.handle_new_user()` vytvoří profil. 
 | `backend/app/storage/blobs.py` (nový) | `BlobStore` + `LocalBlobStore` + `SupabaseBlobStore` (Storage REST, signed URLs) |
 | `backend/app/storage/workspace.py` (nový) | pracovní kopie běhu: `ensure_local`, `sync_up`, LRU, gzip SQLite |
 | `backend/app/storage/runs.py` | `run_path` míří do pracovní kopie; `list_runs` z MetaStore; vlastník z kontextu |
-| `backend/app/jobs.py` | perzistentní joby (MetaStore), fáze, lease, `advance`, události, zrušení |
+| `backend/app/jobs.py` | perzistentní joby (MetaStore), fáze, lease, `advance` (SSE), události, zrušení |
+| `backend/app/job_handlers.py` (nový) | handlery fází pro každý druh jobu (plánování, běh, what-if, detektiv, observe, difficulty, dokumenty) |
+| `backend/app/auth/admin.py` (nový) | Supabase Admin API: pozvánky, ban |
 | `backend/app/pipeline.py` | `execute_run` rozdělen na fáze; stav fáze serializovatelný |
 | `backend/app/quota.py` (nový) | kvóty, rate limit, záznam usage |
 | `backend/app/main.py` | všechny endpointy za `Depends(current_user)`, kontrola vlastnictví (`_run_or_404(run_id, user)`), share router, admin router, `/api/me`, download tickety, CORS z konfigurace, generické chybové zprávy |
-| `backend/tests/` | `test_auth_jwt.py`, `test_isolation.py`, `test_quota.py`, `test_signup.py`, `test_config_safety.py`, `test_storage_workspace.py`, `test_rls.py` (SQL nad reálným Postgresem, skip bez něj), E2E `test_e2e_auth.py` |
+| `backend/tests/` | `test_auth_jwt.py`, `test_isolation.py`, `test_quota_signup_config.py`, `test_storage_jobs.py`, `test_rls.py` (SQL nad reálným Postgresem, skip bez něj), `test_migrate_script.py`, E2E `test_e2e_auth.py` |
 | `frontend/src/auth/*` (nový) | `supabase.ts`, `AuthProvider` (session, refresh, odhlášení při vypršení), `RequireAuth` |
-| `frontend/src/pages/{Login,Register,ForgotPassword,ResetPassword,Account,Admin,SharedRun}.tsx` | obrazovky v češtině |
+| `frontend/src/pages/AuthPages.tsx`, `AccountPages.tsx` | přihlášení, registrace, zapomenuté heslo, nastavení hesla, účet, správa uživatelů, sdílený běh – česky |
 | `frontend/src/api.ts` | `Authorization` hlavička, 401 → odhlášení, `watchJob` přes `advance` (fetch-SSE), downloady, share režim |
-| `vercel.json`, `.env.example`, `README.md`, `scripts/migrate_local_runs.py` | nasazení, konfigurace, migrace dat |
+| `vercel.json`, `.env.example`, `README.md`, `scripts/migrate_local_runs.py`, `scripts/seed_demo.py`, `backend/Dockerfile` | nasazení, konfigurace, migrace dat, demo preset, záložní nasazení |
 
 ## 5. Migrace existujících dat
 
@@ -207,3 +210,27 @@ sdílení, admin. 7. Vercel, env, README, migrační skript, finální testy a b
   bundle 500 MB, streaming odpovědí), Services (beta, `services` + rewrites na službu), limity (Hobby 300 s,
   Pro 800 s / 1800 s beta, 4,5 MB body mimo streaming), systémové proměnné (`VERCEL_ENV`,
   `VERCEL_URL`, `VERCEL_BRANCH_URL`, `VERCEL_PROJECT_PRODUCTION_URL`).
+
+## 10. Stav implementace a ověření (2026-11-28)
+
+| oblast | ověřeno | jak |
+|---|---|---|
+| Ověření JWT (ES256/RS256, exp, aud, iss, cizí podpis, `alg=none`, HS256 confusion, rotace JWKS) | ano | `tests/test_auth_jwt.py` |
+| Každá neveřejná routa vrací 401 bez tokenu | ano | `tests/test_isolation.py` (enumerace `app.routes`) |
+| Izolace uživatelů A/B na backendu (běhy, joby, sezení, SQL, stahování, sdílení, presety, what-if z presetu) | ano | `tests/test_isolation.py` |
+| RLS + Storage policies (izolace A/B, zákaz zápisů, preset, admin) | ano, na Postgresu 16 se shim schématy `auth`/`storage` | `tests/test_rls.py` (`make test-rls`) – odhalilo a opravilo nejednoznačný sloupec v preset policy |
+| Kvóty, rate limit, usage, režimy registrace, blokace účtu, limit velikosti požadavku | ano | `tests/test_quota_signup_config.py`, `test_isolation.py` |
+| Dev bypass odmítnutý v produkci / preview | ano | `tests/test_quota_signup_config.py` (i start procesu) |
+| Obnovitelné fáze jobu, synchronizace se Storage, nová instance mezi fázemi, pád uprostřed fáze, zrušení | ano (Storage simulován adresářem) | `tests/test_storage_jobs.py` |
+| Tvar požadavků na PostgREST / Storage (klíče v hlavičkách, filtry, signed URL) | ano (mock transport) | `tests/test_storage_jobs.py` |
+| E2E (registrace → plán → schválení → generování po fázích → report → what-if → sdílení → odhlášení) | ano na úrovni API (mock LLM, testovací tokeny) | `tests/test_e2e_auth.py` |
+| Frontend: build, typecheck, render obrazovek (auth vypnutý i zapnutý), sdílený náhled | ano | `npm run build`, headless Chrome smoke test |
+| `supabase start` / `db reset` / `db push`, `config.toml`, `seed.sql` proti skutečnému CLI | **ne** | chybí Docker a Supabase CLI |
+| Supabase Auth v prohlížeči (registrace, potvrzení e-mailu, reset hesla, OAuth) | **ne** | vyžaduje Supabase projekt; ruční postup v README |
+| Deploy na Vercel (Services beta, `functions` uvnitř služby, SPA rewrite, velikost Python bundle) | **ne** | chybí Vercel CLI/projekt |
+
+Odchylky od původního plánu: stav účtu je jen `active`/`blocked` + příznak `approved` (místo `pending`);
+režim registrace vynucuje backend z env konfigurace (DB hook „before user created“ nepoužit, pro `invite_only`
+doporučeno vypnout registraci v dashboardu); lokálně (`JOB_AUTODRIVE=1`) fáze řídí background driver a
+`/advance` jen sleduje průběh, na Vercelu (`JOB_AUTODRIVE=0`) je řídí klient; běh se statusem `running` se po
+otevření stránky běhu sám obnoví.
