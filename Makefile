@@ -6,7 +6,7 @@ setup:            ## install backend (uv/venv) and frontend deps
 	cd frontend && npm install
 	@[ -f .env ] || cp .env.example .env
 
-dev:              ## run backend + frontend (real OpenAI if key in .env)
+dev:              ## run backend + frontend (real OpenAI/Gemini if a key is in .env)
 	scripts/dev.sh
 
 mock:             ## run backend + frontend with fixture LLM responses (no key needed)

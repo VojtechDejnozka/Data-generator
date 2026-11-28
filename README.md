@@ -11,13 +11,13 @@ stále později → výpadky zásob → neuskutečněné nákupy → stížnosti
 
 ```bash
 make setup                 # backend venv (uv / Python 3.11+) + npm install, vytvoří .env z .env.example
-# do .env doplňte OPENAI_API_KEY (OpenAI) – nebo použijte mock režim
+# do .env doplňte OPENAI_API_KEY a/nebo GEMINI_API_KEY – nebo použijte mock režim
 make mock                  # offline: fixture odpovědi LLM, bez klíče
-make dev                   # reálné OpenAI API
+make dev                   # reálné LLM API (OpenAI / Gemini)
 # UI: http://127.0.0.1:5173   API: http://127.0.0.1:8000/api/health
 make test                  # backend testy (mock, vč. kauzálního jádra) + typecheck frontendu
 make seed-mock             # předgeneruje 3 demo běhy (příběh, baseline, silné zpoždění) – mock
-make seed                  # totéž s reálným OpenAI
+make seed                  # totéž s reálným LLM
 ```
 
 Bez Supabase (`SUPABASE_URL` prázdné) běží aplikace v **lokálním režimu bez přihlášení** (`AUTH_DISABLED=1`,
@@ -31,14 +31,16 @@ k `~/.npm`, použijte `npm install --cache /tmp/npm-cache`.
 
 | proměnná | význam |
 |---|---|
-| `OPENAI_API_KEY` | klíč z OpenAI – **jen backend**, nikdy ne frontend/repo |
-| `OPENAI_STRONG_MODEL` / `OPENAI_STRONG_FALLBACK_MODELS` | plánování, validace a detektiv (výchozí `gpt-6-luna`) |
-| `OPENAI_CHEAP_MODEL` / `OPENAI_CHEAP_FALLBACK_MODELS` | master data, texty, `llm_rows` (výchozí `gpt-6-luna`) |
+| `OPENAI_API_KEY` / `GEMINI_API_KEY` | klíč OpenAI a/nebo Gemini (stačí jeden) – **jen backend**, nikdy ne frontend/repo |
+| `LLM_PROVIDER` | `auto` (výchozí: OpenAI, je-li jeho klíč, jinak Gemini) \| `openai` \| `gemini` – určuje výchozí modely |
+| `STRONG_MODEL` / `STRONG_FALLBACK_MODELS` | plánování, validace a detektiv (výchozí `gpt-6-luna`, resp. `gemini-4-carbon` + flash fallbacky) |
+| `CHEAP_MODEL` / `CHEAP_FALLBACK_MODELS` | master data, texty, `llm_rows` (výchozí `gpt-6-luna`, resp. `gemini-3.5-flash-lite`) |
+| `OPENAI_*` / `GEMINI_*` varianty výše | např. `GEMINI_STRONG_MODEL` – mají přednost před obecnou proměnnou pro zvoleného providera |
 | `LLM_MOCK=1` | fixture odpovědi (vývoj, testy, demo bez klíče / při vyčerpaném limitu) |
 | `LLM_MAX_CONCURRENCY`, `LLM_CACHE`, `LLM_TIMEOUT_S` | souběžnost, cache odpovědí, timeout |
 | `SUPABASE_*`, `VITE_SUPABASE_*`, `SIGNUP_*`, `QUOTA_*`, … | účty a nasazení – viz [tabulka proměnných](#proměnné-prostředí) |
 
-Klient volá OpenAI Responses API. Při dočasných chybách opakuje požadavek. Alternativní modely lze nastavit ve fallback seznamu.
+Každý model se směruje podle názvu: `gemini-*` → Gemini API (google-genai), ostatní → OpenAI Responses API. Fallback seznam tak může kombinovat oba providery; modely, k jejichž providerovi chybí klíč, se přeskočí. Při dočasných chybách klient požadavek opakuje.
 
 
 ## Účty, přihlášení a nasazení (Supabase + Vercel)
@@ -118,7 +120,7 @@ make dev                 # nebo make mock (LLM_MOCK=1 funguje nezávisle na při
 
 | proměnná | kde | význam |
 |---|---|---|
-| `GEMINI_API_KEY` | backend (secret) | klíč Gemini |
+| `OPENAI_API_KEY` / `GEMINI_API_KEY` | backend (secret) | klíč OpenAI a/nebo Gemini (`LLM_PROVIDER` vybírá výchozí modely) |
 | `SUPABASE_URL` | backend | URL projektu; prázdné = lokální režim bez účtů |
 | `SUPABASE_PUBLISHABLE_KEY` | backend | publishable/anon klíč (dotazy jménem uživatele, platí RLS) |
 | `SUPABASE_SECRET_KEY` | backend (secret) | secret/service_role klíč – jen zápisy po kontrole vlastnictví, Storage, Admin API |
@@ -198,7 +200,7 @@ vždy doplní (model ho zvolí podle příběhu, jinak 2025-01 – 2026-03).
 `backend/app/contracts/` – `ScenarioSpec` (meta, tables, story/causal_chain/distractors, knobs,
 invariants, evidence, dashboard), `PlannerResponse`, `GenerationPlan`, `ValidationVerdict`. Všechna
 LLM volání používají structured output (`text.format` odvozené z Pydantic) + validaci +
-retry s chybovou hláškou (max 2×). Když OpenAI schéma odmítne, klient přepne na JSON mode se schématem
+retry s chybovou hláškou (max 2×). Když API (OpenAI / Gemini) schéma odmítne, klient přepne na JSON mode se schématem
 v promptu. Pokud plánovaný příběh odpovídá modulu, STRONG vrací jen kompaktní `ArchetypePlan`
 (úpravy šablony), což je rychlejší a spolehlivější než generování celé specifikace.
 
@@ -275,7 +277,7 @@ Předem: `make seed` (nebo `make seed-mock`) a `make dev`. Otevřete http://127.
 
 1. **Zadání (30 s)** – *Nový scénář* → *⚡ Preset*. Uživatel zadává jen **popis příběhu, velikost dat a seed**;
    firmu, prostředí, počty entit, intenzitu i to, zda data potřebují časovou osu (a jaké období),
-   rozhodne OpenAI. *Navrhnout scénář* → průběh (SSE).
+   rozhodne LLM. *Navrhnout scénář* → průběh (SSE).
 2. **Review specu (45 s)** – archetyp `retail_supplier_delay`, kauzální řetězec s1–s4 na časové ose,
    distraktory, 13 tabulek (fialová = simulace, modrá/zelená = LLM), knoby, invarianty, důkazní dotazy.
    Přijměte návrh „promotions“ (tabulka přes `llm_rows`) → *Schválit a generovat*. Fáze pipeline běží živě.

@@ -226,6 +226,7 @@ def test_settings_pick_provider_and_models_from_env(monkeypatch):
                 "GEMINI_STRONG_MODEL", "OPENAI_CHEAP_MODEL", "GEMINI_CHEAP_MODEL", "OPENAI_STRONG_FALLBACK_MODELS",
                 "GEMINI_STRONG_FALLBACK_MODELS", "OPENAI_CHEAP_FALLBACK_MODELS", "GEMINI_CHEAP_FALLBACK_MODELS"):
         monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("LLM_MOCK", "0")
 
     def fresh():
         config.get_settings.cache_clear()
