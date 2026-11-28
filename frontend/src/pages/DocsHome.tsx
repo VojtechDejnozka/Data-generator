@@ -63,7 +63,7 @@ export default function DocsHome() {
           <h1 className="text-[28px] leading-tight font-semibold tracking-[-0.015em]">Generátor dokumentů</h1>
           <p className="text-sm text-slate-600 max-w-4xl">
             Libovolné nestrukturované výstupy – lékařské zprávy, dopisy, e-maily, posudky, reporty… Stejná pipeline jako u dat:
-            Gemini navrhne <b>fakta</b> (strukturovaný záznam ke každému dokumentu), <b>sekce</b> a volitelně skrytý <b>vzor</b>,
+            OpenAI navrhne <b>fakta</b> (strukturovaný záznam ke každému dokumentu), <b>sekce</b> a volitelně skrytý <b>vzor</b>,
             CHEAP model napíše texty z faktů, deterministické kontroly ověří, že text fakta skutečně obsahuje, a STRONG model výsledek validuje.
           </p>
         </div>
@@ -98,7 +98,7 @@ export default function DocsHome() {
           </div>
         )}
         {err && <div className="text-sm text-red-700">{err}</div>}
-        <button className="btn btn-primary text-base px-5 py-2" onClick={submit}>Navrhnout dokumenty (Gemini) →</button>
+        <button className="btn btn-primary text-base px-5 py-2" onClick={submit}>Navrhnout dokumenty (OpenAI) →</button>
       </div>
 
       <div className="card">

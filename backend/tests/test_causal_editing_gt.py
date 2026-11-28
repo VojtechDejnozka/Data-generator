@@ -82,6 +82,19 @@ def test_unrealized_fact_is_marked():
     assert m["realized_story_facts"][0]["realized"] is False
 
 
+def test_story_fact_needs_a_causal_path_but_it_can_be_indirect():
+    from app.causal.validation import validate_spec
+
+    spec = linear_xy(10)
+    data = spec.model_dump()
+    data["ground_truth"]["story_facts"] = [
+        {"fact_id": "indirect", "description": "x affects w via y", "source": "x", "target": "w"},
+        {"fact_id": "unconnected", "description": "z affects w", "source": "z", "target": "w"},
+    ]
+    errors = validate_spec(SCMSpec.model_validate(data)).errors
+    assert [(e.check_id, e.target) for e in errors] == [("fact.path", "fact:unconnected")]
+
+
 def test_planner_schema_hints_from_ddl_and_ontology():
     from app.causal.planner import schema_hints
     h = schema_hints("CREATE TABLE a (id INTEGER PRIMARY KEY, v REAL); CREATE TABLE b (id INTEGER, a_id INTEGER, "

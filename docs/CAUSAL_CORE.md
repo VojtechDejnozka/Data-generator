@@ -115,7 +115,7 @@ vzorku; causal-learn se použije, je-li nainstalován), create_plot = nepodporov
   `DifficultyEstimate.usage`, `ManualEvaluationResult.usage`, `OptimizationResult.usage` a `/causal` (`llm_usage_total`);
   optimalizace respektuje `token_budget`.
 * `kind="statistical"` – deterministický referenční analytik nad stejnými nástroji (levný screening, testy).
-* `kind="llm"` – agent nad stávajícím LLM klientem (Gemini, role strong/cheap), nová konverzace a nonce pro každý
+* `kind="llm"` – agent nad stávajícím LLM klientem (OpenAI, role strong/cheap), nová konverzace a nonce pro každý
   běh, výstupy nástrojů v `<tool_output>` jako nedůvěryhodná data. **V mock režimu** se deleguje na statistického
   detektiva a výsledek nese `agent.mock = true`.
 
@@ -169,7 +169,7 @@ Samostatný endpoint `/observe` dál slouží k evaluaci již zadané konfigurac
 ## 8. Knihovny
 
 Použito: NumPy, SciPy (distribuce, testy), pandas, NetworkX (graf, pořadí), SQLGlot (parser SQL / DDL),
-PyYAML, stávající Pydantic, FastAPI, SQLite a google-genai klient. Zváženo a nepoužito: DoWhy GCM / PyMC / pgmpy
+PyYAML, stávající Pydantic, FastAPI, SQLite a OpenAI SDK klient. Zváženo a nepoužito: DoWhy GCM / PyMC / pgmpy
 (vyžadují fitování nebo nepokrývají relační granularitu a čas – vlastní registr nad NumPy/SciPy je jednodušší),
 Snowfakery/PluRel (nepřináší kauzální mechanismy), Jenga/PyGrinder (operace jsou jednoduché v pandas a potřebujeme
 CRN + manifest), Pandera (relační kontroly jsou přímo v pandas/SQLite), Optuna (adaptivní hledání stačí pro malé
@@ -186,7 +186,7 @@ nadbytečné/chybějící hrany, orientace, Markovova ekvivalence, nejistota, ne
 optimalizace s deterministickým mockem (cíl, tolerance, nedosažitelný cíl, pod baseline, nemonotónní funkce,
 zrušení, rozpočet, zamítnutí, zamčené parametry), bezpečnost (zápis, ATTACH, PRAGMA, nebezpečné funkce i při
 obejití parseru, přístup ke GT/clean world, prompt injection v datech) a end-to-end přes API v mock režimu pro
-obě domény. Test s reálným LLM (`test_real_llm_planner_and_detective`) se spouští jen s `GEMINI_API_KEY` a
+obě domény. Test s reálným LLM (`test_real_llm_planner_and_detective`) se spouští jen s `OPENAI_API_KEY` a
 `RUN_REAL_LLM_TESTS=1` – **v této implementaci nebyl proveden**.
 
 ## 10. Známá omezení

@@ -47,7 +47,7 @@ from .mapping import author_evidence, public_schema, scenario_spec_from_scm
 from .results import (DetectiveResult, DifficultyEstimate, ManualEvaluationResult, ObservedDatasetInfo,
                       OptimizationResult, PublicSchema, ValidationReport)
 from .sqlsafe import write_observed_db
-from .validation import validate_spec, validate_world
+from .validation import LARGE_MIN_ROWS, require_large_plan, validate_spec, validate_world
 
 SCENARIO_DIR = Path(__file__).resolve().parent / "scenarios"
 _WORLDS: "OrderedDict[str, tuple[CleanWorld, dict[str, Any]]]" = OrderedDict()
@@ -78,9 +78,28 @@ def load_reference_scenario(sid: str) -> SCMSpec:
 def scenario_spec(scm: SCMSpec, base: Optional[ScenarioSpec] = None) -> ScenarioSpec:
     spec = scenario_spec_from_scm(scm, base)
     ev = author_evidence(scm)
-    return spec.model_copy(update={"evidence": ev, "dashboard": Dashboard(title=scm.meta.name, widgets=[
+    widgets = [
         Widget(id=f"w_{e.id}"[:60], title=e.title, sql=e.sql, chart=e.chart, x=e.x, y=e.y, series=e.series,
-               description=e.expected, width=2) for e in ev])})
+               description=e.expected, width=2) for e in ev]
+    if not widgets:
+        from .graph import is_temporal_entity
+        for entity in scm.entities:
+            if not entity.export:
+                continue
+            table = '"' + entity.name.replace('"', '""') + '"'
+            previous_count = len(widgets)
+            if scm.time and is_temporal_entity(scm, entity.entity_id):
+                date = '"' + scm.time.time_column.replace('"', '""') + '"'
+                for var in scm.variables_of(entity.entity_id):
+                    if var.column and var.data_type in ("float", "int", "bool") and var.observability == "observed":
+                        col = '"' + var.column.replace('"', '""') + '"'
+                        widgets.append(Widget(id=f"trend_{var.variable_id}", title=f"{entity.name} · průměr {var.column}",
+                            sql=f"SELECT {date} AS period, AVG({col}) AS value FROM {table} GROUP BY 1 ORDER BY 1",
+                            chart="line", x="period", y=["value"]))
+            if len(widgets) == previous_count:
+                widgets.append(Widget(id=f"count_{entity.entity_id}", title=f"{entity.name} · počet řádků",
+                                      sql=f"SELECT COUNT(*) AS n FROM {table}", chart="kpi", y=["n"]))
+    return spec.model_copy(update={"evidence": ev, "dashboard": Dashboard(title=scm.meta.name, widgets=widgets)})
 
 
 # =========================================================================== worlds
@@ -459,6 +478,9 @@ async def execute_causal_run(req: RunRequest, job) -> dict[str, Any]:
     rep = validate_spec(scm)
     if rep.status == "FAIL":
         raise ValueError("SCM není spustitelný: " + "; ".join(f"{c.target}: {c.explanation}" for c in rep.errors[:8]))
+    large = req.input is not None and req.input.volume == "large"
+    if large:
+        require_large_plan(scm)
     spec = scenario_spec(scm, req.spec)
     run_id = store.new_run_id()
     t0 = dt.datetime.now()
@@ -476,6 +498,8 @@ async def execute_causal_run(req: RunRequest, job) -> dict[str, Any]:
                            f"{len(scm.events)} událostí", 0.1)
     gw = await asyncio.to_thread(generate_validated, scm)
     w = gw.world
+    if large and sum(len(table) for table in w.tables.values()) < LARGE_MIN_ROWS:
+        raise ValueError(f"Vygenerovaný dataset nedosáhl minima {LARGE_MIN_ROWS:,} řádků pro velikost Velký.")
     job.emit("simulation", f"Čistý svět: {sum(len(t) for t in w.tables.values()):,} řádků, hash {w.world_hash[:12]}", 0.5)
     job.emit("validate", f"Validace: spec {gw.spec_report.status}, svět {gw.world_report.status} "
                          f"({len(gw.world_report.errors)} chyb, {len(gw.world_report.warnings)} upozornění)", 0.6)
@@ -600,8 +624,15 @@ async def legacy_detective_view(run_id: str, job=None, kind: str = "llm") -> dic
     clean world), evaluated against the ground truth, returned in the shape the current UI renders."""
     _ensure_valid(run_id)
     world, manifest = load_world(run_id)
-    info = observe_and_store(run_id, world, CorruptionConfig())
-    cfg = DetectiveConfig(kind=kind)  # in mock mode the LLM detective delegates to the statistical one (labelled)
+    selected = ((store.load_run(run_id) or {}).get("observation") or {}).get("observation_id")
+    if selected:
+        info = ObservedDatasetInfo.model_validate_json(read_saved_text(_obs_dir(run_id, selected) / "info.json"))
+        if info.world_hash != world.world_hash:
+            meta = json.loads(read_saved_text(store.run_path(run_id) / "worlds" / info.world_hash / "world.json"))
+            world, manifest = _world_for(run_id, {**meta, "world_seed": meta["seed"]})
+    else:
+        info = observe_and_store(run_id, world, CorruptionConfig())
+    cfg = DetectiveConfig(kind=kind, statistical_first_pass=True)
     res, tracker = await detective_on_tracked(run_id, info.observation_id, cfg,
                                               progress=(lambda m, f=None: job.emit("detective", m, f)) if job else None)
     ev = evaluate(world.spec, manifest, res, EvaluationConfig(), observation_id=info.observation_id)
@@ -613,7 +644,7 @@ async def legacy_detective_view(run_id: str, job=None, kind: str = "llm") -> dic
         if job:
             job.emit("detective", f"{item.evidence_id} {item.tool}: {item.summary[:120]}", None, sql=item.args.get("query"))
     root = next((k for k in res.key_events if k.role == "root_cause"), None)
-    checks = [{"name": f"{name}", "ok": (m.score or 0) >= 0.5, "expected": "1.0", "got":
+    checks = [{"name": f"{name}", "ok": m.score >= 0.5 if m.score is not None else None, "expected": "1.0", "got":
                (f"{m.score:.2f}" if m.score is not None else m.reason)} for name, m in ev.metrics.items()]
     checks += [{"name": f"fakt: {f['fact_id']}", "ok": (f.get("score") or 0) >= 0.5, "expected": f.get("kind"),
                 "got": f.get("status") if f.get("score") is None else f"{f['score']:.2f}"} for f in ev.story_facts]
@@ -624,7 +655,10 @@ async def legacy_detective_view(run_id: str, job=None, kind: str = "llm") -> dic
                   "causal_chain": [f"{r.source} {'→' if r.edge_type == 'directed' else '—'} {r.target} "
                                    f"({r.estimated_direction}, conf {r.confidence:.2f})"
                                    for r in sorted(res.inferred_relationships, key=lambda r: -r.confidence)[:10]],
-                  "ruled_out": res.alternative_explanations, "confidence": round(1 - (ev.difficulty or 100) / 100, 3)},
+                  "key_events": [k.model_dump() for k in res.key_events],
+                  "estimated_effects": [effect.model_dump() for effect in res.estimated_effects],
+                  "limitations": res.limitations, "alternatives": res.alternative_explanations,
+                  "confidence": round(1 - (ev.difficulty or 100) / 100, 3)},
         "transcript": transcript,
         "score": {"score": round(100 * (ev.recovery_score or 0)), "checks": checks,
                   "queries": len(res.executed_queries), "difficulty": ev.difficulty, "evaluation_id": ev.evaluation_id},

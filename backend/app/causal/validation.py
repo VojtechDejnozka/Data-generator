@@ -26,10 +26,11 @@ from . import mechanisms as M
 from .contracts import SCMSpec, VariableSpec
 from .engine import TIME_KEY, CleanWorld, identity_columns, key_columns, own_key_columns, relation
 from .expressions import ExpressionError, check_expr, evaluate
-from .graph import GraphError, check_lags, execution_plan, is_dynamic_entity, is_temporal_entity
+from .graph import GraphError, check_lags, descendants, execution_plan, is_dynamic_entity, is_temporal_entity
 from .results import ValidationReport
 
 MAX_TOTAL_ROWS = 3_000_000
+LARGE_MIN_ROWS = 100_000
 STAT_FAMILY_ALPHA = 0.001
 
 
@@ -58,6 +59,19 @@ def estimate_rows(spec: SCMSpec) -> dict[str, Optional[int]]:
     for e in spec.entities:
         rows(e.entity_id)
     return out
+
+
+def require_large_plan(spec: SCMSpec) -> None:
+    estimates = estimate_rows(spec)
+    fixed_rows = sum(estimates[e.entity_id] or 0 for e in spec.entities if e.export)
+    if fixed_rows < LARGE_MIN_ROWS:
+        raise ValueError(f"Velký dataset vyžaduje alespoň {LARGE_MIN_ROWS:,} řádků v exportovaných tabulkách. "
+                         f"Plán zaručuje pouze {fixed_rows:,}. Zvětšete počty entit nebo počet období.")
+    exported = [e for e in spec.entities if e.export]
+    substantial = [e for e in exported if (estimates[e.entity_id] or 0) >= 5000]
+    if len(exported) < 5 or len(substantial) < 2:
+        raise ValueError("Velký dataset potřebuje alespoň 5 věcně odlišných exportovaných tabulek "
+                         "a alespoň dvě s 5 000 nebo více plánovanými řádky. Rozdělte fakta podle významu řádku.")
 
 
 def validate_spec(spec: SCMSpec) -> ValidationReport:
@@ -136,7 +150,7 @@ def validate_spec(spec: SCMSpec) -> ValidationReport:
         if v.column:
             reserved = set(own_key_columns(spec, v.entity)) | ({tcol} if is_temporal_entity(spec, v.entity) else set())
             if v.column in reserved:
-                err("variable.column", tgt, f"column {v.column} clashes with a key/time column")
+                err("variable.reserved_column", tgt, f"column {v.column} clashes with a key/time column")
             others = [x.variable_id for x in spec.variables_of(v.entity) if x.column == v.column]
             if len(others) > 1:
                 err("variable.column", tgt, f"column {v.column} used by several variables {others}")
@@ -188,6 +202,11 @@ def validate_spec(spec: SCMSpec) -> ValidationReport:
         err("graph.cycle", "graph", str(ex), "break the loop with a lagged parent (X_t -> Y_t -> X_t+1)")
     for ev in spec.events:
         tgt = f"event:{ev.event_id}"
+        try:
+            ev.check_parameters()
+        except ValueError as ex:
+            err("event.params", tgt, str(ex))
+            continue
         for vid in ev.affected_variables:
             v = spec.variable(vid)
             if not v:
@@ -228,6 +247,10 @@ def validate_spec(spec: SCMSpec) -> ValidationReport:
                 err("fact.entity", tgt, f"unknown entity {eid}")
         if f.kind == "edge" and not (f.source and f.target):
             err("fact.edge", tgt, "edge fact needs source and target")
+        elif (f.kind in ("edge", "direction", "lag") and f.source in types and f.target in types
+              and f.target not in descendants(spec, f.source)):
+            err("fact.path", tgt, f"no directed causal path from {f.source} to {f.target}. "
+                "Use the actual upstream cause as source and align the description with that relationship.")
     est = estimate_rows(spec)
     total = sum(r for r in est.values() if r)
     rep.add(check_id="size.rows", layer="spec", target="dataset", expected=f"<= {MAX_TOTAL_ROWS}",

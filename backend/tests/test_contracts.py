@@ -4,7 +4,6 @@ from pydantic import ValidationError
 from app.contracts.io import ScenarioInput
 from app.contracts.spec import Column, Knob, ScenarioSpec
 from app.generation.scenarios.registry import RETAIL
-from app.llm.schema_utils import gemini_schema
 from app.contracts.io import PlannerResponse
 
 
@@ -50,17 +49,6 @@ def test_period_validation():
         ScenarioSpec.model_validate(data)
 
 
-def test_gemini_schema_inlines_refs():
-    s = gemini_schema(PlannerResponse)
-    text = str(s)
-    assert "$ref" not in text and "$defs" not in text
-    # Optional fields collapse to the non-null branch
-    col = s["properties"]["spec"]["properties"]["tables"]["items"]["properties"]["columns"]["items"]
-    assert col["properties"]["fk"]["type"] == "string"
-
-
-def test_gemini_schema_keeps_property_named_title():
-    s = gemini_schema(PlannerResponse)
-    widget = s["properties"]["spec"]["properties"]["dashboard"]["properties"]["widgets"]["items"]
+def test_structured_output_schema_keeps_required_widget_title():
+    widget = PlannerResponse.model_json_schema()["$defs"]["Widget"]
     assert "title" in widget["properties"] and "title" in widget["required"]
-    assert "title" not in widget  # the schema keyword itself is dropped
