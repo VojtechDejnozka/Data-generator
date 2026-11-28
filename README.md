@@ -116,6 +116,14 @@ make dev                 # nebo make mock (LLM_MOCK=1 funguje nezávisle na při
 - Konfigurace Services (pole `functions` uvnitř služby, SPA rewrite) vychází z dokumentace z 2026-11-28 a **nebyla
   ověřena reálným deployem** – při prvním nasazení zkontrolujte build log a `GET /api/health`.
 
+### 4. Průběžné nasazení z `main`
+- **Vercel**: projekt `story2data` je napojený na GitHub repozitář; každý push do `main` = produkční deploy
+  (https://story2data.vercel.app). Proměnné prostředí jsou nastavené jen pro *Production*.
+- **Supabase**: GitHub integrace projektu (*Project Settings → Integrations → GitHub*, „Deploy to production“
+  z větve `main`, Supabase directory `supabase`) aplikuje nové soubory ze `supabase/migrations/` při pushi do `main`.
+  Nové migrace vytvářejte jako nový soubor `supabase/migrations/<YYYYMMDDHHMMSS>_<nazev>.sql`; existující soubory
+  už neměňte (verze `20261128080552` odpovídá migraci aplikované v produkci).
+
 ### Proměnné prostředí
 
 | proměnná | kde | význam |
