@@ -1,0 +1,4 @@
+-r requirements.txt
+pytest>=9.2.0
+# RLS tests against a throwaway Postgres (tests/test_rls.py; skipped without PG_BIN/initdb)
+psycopg[binary]>=3.2

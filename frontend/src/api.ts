@@ -1,5 +1,62 @@
-// Thin API client for the FastAPI backend (proxied under /api by Vite).
+// Thin API client for the FastAPI backend (proxied under /api by Vite, or VITE_API_BASE_URL).
+// Every request carries the Supabase access token; job progress streams over fetch (not EventSource),
+// so the token travels in the Authorization header and never in a URL.
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { accessToken } from './auth/supabase'
+
+const BASE = ((import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '').replace(/\/$/, '')
+
+export class ApiError extends Error {
+  status: number
+  detail: any
+  constructor(status: number, message: string, detail?: any) {
+    super(message)
+    this.name = ''  // String(err) -> just the (Czech) message
+    this.status = status
+    this.detail = detail
+  }
+}
+
+let unauthorized: (() => void) | null = null
+/** Called on 401 from the API (expired / revoked session). */
+export function setUnauthorizedHandler(fn: (() => void) | null) { unauthorized = fn }
+
+let shareToken: string | null = null
+/** Read-only share mode: run-scoped GETs (+ SQL) are served by /api/share/{token}. */
+export function setShareToken(t: string | null) { shareToken = t }
+
+const SHARE_PATH = /^\/api\/runs\/[^/?]+(\/(report|dashboard|schema|ground-truth|causal|query|tables\/[^?]+))?(\?.*)?$/
+
+function rewrite(url: string): string {
+  if (!shareToken || url === '/api/health') return url
+  const m = url.match(SHARE_PATH)
+  if (!m) throw new ApiError(403, 'Ve sdíleném náhledu není tato akce dostupná.')
+  return `/api/share/${shareToken}${m[1] ?? ''}${m[3] ?? ''}`
+}
+
+async function authHeaders(): Promise<Record<string, string>> {
+  if (shareToken) return {}
+  const t = await accessToken()
+  return t ? { Authorization: `Bearer ${t}` } : {}
+}
+
+function errorMessage(status: number, j: any, fallback: string): string {
+  const d = j?.detail ?? j
+  if (typeof d === 'string') return d
+  if (d?.message) return d.message
+  if (Array.isArray(d)) return 'Neplatný vstup: ' + d.map((x: any) => `${(x.loc ?? []).slice(1).join('.')} ${x.msg}`).join('; ')
+  if (d?.errors) return d.errors.join('; ')
+  if (status >= 500) return 'Server je dočasně nedostupný. Zkuste to prosím znovu.'
+  return fallback
+}
+
+async function parseError(res: Response): Promise<ApiError> {
+  let j: any = null
+  try { j = await res.json() } catch { /* ignore */ }
+  if (res.status === 401 && !shareToken) unauthorized?.()
+  if (res.status === 429) window.dispatchEvent(new Event('s2d:usage'))
+  return new ApiError(res.status, errorMessage(res.status, j, `${res.status} ${res.statusText}`), j?.detail)
+}
 
 export type Json = any
 
@@ -136,26 +193,67 @@ export interface JobEvent {
 }
 
 async function req<T>(method: string, url: string, body?: unknown): Promise<T> {
-  const res = await fetch(url, {
-    method,
-    headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  })
-  if (!res.ok) {
-    let detail = res.statusText
-    try {
-      const j = await res.json()
-      detail = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail ?? j)
-    } catch {
-      /* ignore */
-    }
-    throw new Error(`${res.status}: ${detail}`)
+  const target = rewrite(url)
+  let res: Response
+  try {
+    res = await fetch(BASE + target, {
+      method,
+      headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(await authHeaders()) },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    })
+  } catch {
+    throw new ApiError(0, 'Nepodařilo se spojit se serverem.')
   }
+  if (!res.ok) throw await parseError(res)
   return res.json() as Promise<T>
+}
+
+export interface Me {
+  id: string
+  email: string
+  role: 'user' | 'admin'
+  display_name: string
+  signup_mode: string
+  auth_disabled: boolean
+  quota: {
+    unlimited: boolean
+    runs_used: number; runs_limit: number; runs_left: number | null
+    tokens_used: number; tokens_limit: number; tokens_left: number | null
+    resets_at: string
+  }
+}
+
+export type DownloadWhat = 'db' | 'zip' | 'obs_db' | 'doc_file' | 'docs_zip'
+
+/** Ask the backend for a short-lived URL (signed Storage URL or one-time ticket). */
+export async function downloadUrl(runId: string, what: DownloadWhat, extra: { obs_id?: string; file?: string; inline?: boolean } = {}) {
+  const r = await req<{ url: string; filename: string }>('POST', `/api/runs/${runId}/download`, { what, ...extra })
+  return { url: r.url.startsWith('/') ? BASE + r.url : r.url, filename: r.filename }
+}
+
+/** Trigger a browser download without putting any credential into the page. */
+export async function download(runId: string, what: DownloadWhat, extra: { obs_id?: string; file?: string } = {}) {
+  const { url, filename } = await downloadUrl(runId, what, extra)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.rel = 'noopener'
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
 }
 
 export const api = {
   health: () => req<Json>('GET', '/api/health'),
+  me: () => req<Me>('GET', '/api/me'),
+  updateMe: (display_name: string) => req<Json>('PATCH', '/api/me', { display_name }),
+  share: (id: string, enabled: boolean) => req<{ share_token: string | null }>('POST', `/api/runs/${id}/share`, { enabled }),
+  deleteRun: (id: string) => req<Json>('DELETE', `/api/runs/${id}`),
+  cancelJob: (id: string) => req<Json>('POST', `/api/jobs/${id}/cancel`),
+  adminUsers: () => req<Json>('GET', '/api/admin/users'),
+  adminUpdateUser: (id: string, patch: Json) => req<Json>('PATCH', `/api/admin/users/${id}`, patch),
+  adminInvite: (email: string) => req<Json>('POST', '/api/admin/invite', { email }),
+  adminPreset: (id: string, is_preset: boolean) => req<Json>('POST', `/api/admin/runs/${id}/preset`, { is_preset }),
   presets: () => req<Json[]>('GET', '/api/presets'),
   plan: (input: Json) => req<{ job_id: string }>('POST', '/api/plan', input),
   scmImport: (model: Json, observation: Json) =>
@@ -197,26 +295,60 @@ export const api = {
   docsDocument: (id: string, docId: number) => req<Json>('GET', `/api/docs/runs/${id}/doc/${docId}`),
 }
 
-/** Subscribe to job progress over SSE. Returns an unsubscribe function. */
+/**
+ * Drive a job and subscribe to its progress. Each POST /advance runs one stage of the job on the server
+ * (or follows it) and streams SSE frames over fetch; we call it again until the job is final.
+ * Returns an unsubscribe function (the job keeps its state on the server and can be resumed later).
+ */
 export function watchJob(jobId: string, onEvent: (e: JobEvent) => void): () => void {
-  const es = new EventSource(`/api/jobs/${jobId}/events`)
-  es.onmessage = (m) => {
-    const ev = JSON.parse(m.data) as JobEvent
-    onEvent(ev)
-    if (ev.final) es.close()
+  let stopped = false
+  const ctrl = new AbortController()
+  let since = 0
+  const finish = (e: JobEvent) => { if (!stopped) { onEvent(e); window.dispatchEvent(new Event('s2d:usage')) } }
+
+  const run = async () => {
+    let failures = 0
+    while (!stopped) {
+      try {
+        const res = await fetch(`${BASE}/api/jobs/${jobId}/advance?since=${since}`, {
+          method: 'POST', headers: await authHeaders(), signal: ctrl.signal,
+        })
+        if (!res.ok || !res.body) throw await parseError(res)
+        const reader = res.body.getReader()
+        const decoder = new TextDecoder()
+        let buf = ''
+        let tail: JobEvent | null = null
+        for (;;) {
+          const { value, done } = await reader.read()
+          if (done) break
+          buf += decoder.decode(value, { stream: true })
+          let cut
+          while ((cut = buf.indexOf('\n\n')) >= 0) {
+            const frame = buf.slice(0, cut)
+            buf = buf.slice(cut + 2)
+            const data = frame.split('\n').filter((l) => l.startsWith('data: ')).map((l) => l.slice(6)).join('\n')
+            if (!data) continue  // heartbeat comment
+            const ev = JSON.parse(data) as JobEvent
+            if ('final' in ev) { tail = ev; continue }
+            if (typeof ev.i === 'number') since = Math.max(since, ev.i + 1)
+            if (!stopped) onEvent(ev)
+          }
+        }
+        if (tail?.final) { finish({ final: true, status: tail.status, result: tail.result, error: tail.error }); return }
+        failures = 0
+      } catch (e) {
+        if (stopped || (e as Error)?.name === 'AbortError') return
+        const status = (e as ApiError)?.status ?? 0
+        if (status === 401 || status === 403 || status === 404 || ++failures > 6) {
+          finish({ final: true, status: 'error', error: String(e) })
+          return
+        }
+        await new Promise((r) => setTimeout(r, 1000 * failures))
+      }
+    }
   }
-  es.onerror = () => {
-    // fall back to polling once if the stream breaks
-    es.close()
-    fetch(`/api/jobs/${jobId}`)
-      .then((r) => r.json())
-      .then((s) => {
-        if (s.status === 'done' || s.status === 'error') onEvent({ final: true, status: s.status, result: s.result, error: s.error })
-        else setTimeout(() => watchJob(jobId, onEvent), 1000)
-      })
-      .catch(() => undefined)
-  }
-  return () => es.close()
+  void run()
+  return () => { stopped = true; ctrl.abort() }
 }
 
 export const fmt = (v: Json): string => {

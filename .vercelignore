@@ -1,0 +1,16 @@
+# Never upload secrets, local data or build artefacts to Vercel
+.env
+.env.*
+!.env.example
+runs/
+.cache/
+**/.venv/
+**/node_modules/
+**/__pycache__/
+**/.pytest_cache/
+frontend/dist/
+backend/tests/
+backend/runs/
+backend/.cache/
+docs/zadani.docx
+.DS_Store

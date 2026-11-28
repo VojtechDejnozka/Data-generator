@@ -1,9 +1,16 @@
-"""Run storage: each run = directory with data.sqlite + run.json + manifest.json + llm_calls.jsonl."""
+"""Run storage: each run = directory with data.sqlite + run.json + manifest.json + llm_calls.jsonl.
+
+The directory lives in the workspace (storage/workspace.py): permanent in local mode, a cache of Supabase
+Storage otherwise. Every ``run.json`` write also upserts the run's metadata row (owner, status, list summary)
+in the metadata store; the owner comes from ``set_owner()`` (jobs) and is never taken from request bodies.
+"""
 from __future__ import annotations
 
+import contextvars
 import datetime as dt
 import io
 import json
+import re
 import secrets
 import sqlite3
 import zipfile
@@ -17,21 +24,89 @@ from ..config import get_settings
 from ..contracts.spec import ScenarioSpec, Table
 from .text_files import read_saved_text
 
+_RUN_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_owner: contextvars.ContextVar[str | None] = contextvars.ContextVar("run_owner", default=None)
+
 SQL_TYPES = {"int": "INTEGER", "float": "REAL", "text": "TEXT", "date": "TEXT", "datetime": "TEXT", "bool": "INTEGER"}
 
 
 def runs_dir() -> Path:
-    return get_settings().data_dir
+    return get_settings().workspace_dir
 
 
 def new_run_id() -> str:
-    return dt.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
+    return dt.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(4)
+
+
+def check_run_id(run_id: str) -> str:
+    if not run_id or not _RUN_ID.match(run_id):
+        raise ValueError("invalid run id")
+    return run_id
 
 
 def run_path(run_id: str) -> Path:
-    if not run_id or "/" in run_id or ".." in run_id:
-        raise ValueError("invalid run id")
-    return runs_dir() / run_id
+    return runs_dir() / check_run_id(run_id)
+
+
+def set_owner(user_id: str | None):
+    """Owner of runs created in the current context (set by the job runner)."""
+    return _owner.set(user_id)
+
+
+def reset_owner(token) -> None:
+    _owner.reset(token)
+
+
+def current_owner() -> str | None:
+    return _owner.get()
+
+
+def summary_from_doc(r: dict[str, Any]) -> dict[str, Any]:
+    """Fields the run list needs (kept in runs.summary so listing never opens run files)."""
+    item = {k: r.get(k) for k in ("label", "status", "created_at", "parent_run_id", "knob_values", "verdict",
+                                  "row_counts", "name", "mock")}
+    item["kind"] = r.get("kind", "data")
+    if isinstance(item.get("verdict"), dict):  # list view needs only the headline
+        item["verdict"] = {k: item["verdict"].get(k) for k in ("verdict", "summary")}
+    if item["kind"] == "documents":
+        ds = r.get("doc_spec") or {}
+        item.update(format=ds.get("format"), count=ds.get("count"), document_type=ds.get("document_type"),
+                    source_run_id=ds.get("source_run_id"), source_table=ds.get("source_table"))
+    if r.get("usage"):
+        u = r["usage"]
+        item["usage"] = {"total_tokens": u.get("total_tokens"), "total_cost_usd": u.get("total_cost_usd"),
+                         "total_calls": u.get("total_calls")}
+    return item
+
+
+def meta_from_doc(r: dict[str, Any], owner: str) -> dict[str, Any]:
+    status = r.get("status") if r.get("status") in ("running", "done", "error") else "running"
+    created = r.get("created_at")
+    if created and "+" not in str(created) and not str(created).endswith("Z"):
+        try:  # run.json stores naive local time
+            created = dt.datetime.fromisoformat(str(created)).astimezone(dt.timezone.utc).isoformat()
+        except ValueError:
+            created = None
+    out = {"id": r["run_id"], "user_id": owner, "kind": r.get("kind", "data"), "engine": r.get("engine"),
+           "label": str(r.get("label") or "")[:200], "name": str(r.get("name") or "")[:200], "status": status,
+           "parent_run_id": r.get("parent_run_id"), "summary": summary_from_doc(r)}
+    if created:
+        out["created_at"] = created
+    return out
+
+
+def _sync_meta(run: dict[str, Any]) -> None:
+    from .meta import get_meta
+
+    from ..config import DEV_USER_ID
+
+    owner = run.get("user_id") or current_owner()
+    if not owner:
+        if get_settings().use_supabase:
+            raise RuntimeError("run owner unknown (set_owner() not called)")
+        owner = DEV_USER_ID  # local scripts/tests without an account context
+    run["user_id"] = owner
+    get_meta().upsert_run(meta_from_doc(run, owner))
 
 
 def db_path(run_id: str) -> Path:
@@ -117,6 +192,8 @@ def read_table(run_id: str, name: str) -> pd.DataFrame:
 def save_json(run_id: str, name: str, data: Any) -> None:
     p = run_path(run_id)
     p.mkdir(parents=True, exist_ok=True)
+    if name == "run.json" and isinstance(data, dict):
+        _sync_meta(data)
     (p / name).write_text(json.dumps(data, ensure_ascii=False, indent=1, default=_json_default), encoding="utf-8")
 
 
@@ -141,22 +218,16 @@ def _json_default(o: Any) -> Any:
     raise TypeError(type(o))
 
 
-def list_runs() -> list[dict[str, Any]]:
-    out = []
-    for p in sorted(runs_dir().glob("*/run.json"), reverse=True):
-        try:
-            r = json.loads(read_saved_text(p))
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            continue
-        item = {k: r.get(k) for k in ("run_id", "label", "status", "created_at", "parent_run_id",
-                                      "knob_values", "verdict", "row_counts", "name", "mock")}
-        item["kind"] = r.get("kind", "data")
-        if item["kind"] == "documents":
-            ds = r.get("doc_spec") or {}
-            item.update(format=ds.get("format"), count=ds.get("count"), document_type=ds.get("document_type"),
-                        source_run_id=ds.get("source_run_id"), source_table=ds.get("source_table"))
-        out.append(item)
-    return out
+def list_item(meta: dict[str, Any], viewer_id: str | None = None) -> dict[str, Any]:
+    """Run-list entry from a metadata row."""
+    item = dict(meta.get("summary") or {})
+    item.update(run_id=meta["id"], status=meta.get("status") or item.get("status"),
+                label=meta.get("label") or item.get("label"), name=meta.get("name") or item.get("name"),
+                kind=meta.get("kind") or item.get("kind", "data"), is_preset=bool(meta.get("is_preset")),
+                shared=bool(meta.get("share_token")), parent_run_id=meta.get("parent_run_id"))
+    item["own"] = viewer_id is None or meta.get("user_id") == viewer_id
+    item.setdefault("created_at", meta.get("created_at"))
+    return item
 
 
 def load_run(run_id: str) -> Optional[dict[str, Any]]:

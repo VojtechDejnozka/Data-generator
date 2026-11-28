@@ -80,12 +80,14 @@ export default function Home() {
                       <td className="py-2">
                         <Link to={`/runs/${r.run_id}`} className="font-medium hover:underline underline-offset-2">{r.name}</Link>
                         {r.mock && <span className="ml-2 text-xs text-amber-800">mock</span>}
+                        {r.is_preset && <span className="ml-2 text-xs text-slate-500" title="Sdílený ukázkový běh, jen pro čtení">ukázka</span>}
+                        {r.shared && <span className="ml-2 text-xs text-slate-500" title="Má veřejný odkaz pro čtení">sdíleno</span>}
                         <div className="text-xs text-slate-500">
                           {r.label}{r.parent_run_id && <span title={r.parent_run_id}>, what-if z …{r.parent_run_id.slice(-6)}</span>}
                           <span className="mono text-slate-400 ml-2">{r.run_id}</span>
                         </div>
                       </td>
-                      <td className="py-2 text-xs text-slate-600 whitespace-nowrap tabular-nums">{r.created_at?.replace('T', ' ').slice(0, 16)}</td>
+                      <td className="py-2 text-xs text-slate-600 whitespace-nowrap tabular-nums">{r.created_at ? new Date(r.created_at).toLocaleString('cs-CZ', { dateStyle: 'short', timeStyle: 'short' }) : '–'}</td>
                       <td className="py-2 text-xs text-slate-600">
                         {r.knob_values && KNOBS.filter((k) => k in r.knob_values).map((k) =>
                           <div key={k}><span className="text-slate-400">{k}</span> {fmt(r.knob_values[k])}</div>)}
