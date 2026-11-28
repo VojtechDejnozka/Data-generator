@@ -11,9 +11,11 @@ from dotenv import load_dotenv
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 REPO_DIR = BACKEND_DIR.parent
 
-# Repo-level .env first, backend/.env may override.
-load_dotenv(REPO_DIR / ".env")
-load_dotenv(BACKEND_DIR / ".env", override=True)
+# Repo-level .env first, backend/.env may override. Tests set STORY2DATA_NO_DOTENV=1 so that a developer's
+# .env (which may point at the production Supabase project with its secret key) is never loaded.
+if os.getenv("STORY2DATA_NO_DOTENV") != "1":
+    load_dotenv(REPO_DIR / ".env")
+    load_dotenv(BACKEND_DIR / ".env", override=True)
 
 
 def _list(value: str | None) -> list[str]:

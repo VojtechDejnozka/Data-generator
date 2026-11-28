@@ -381,13 +381,11 @@ def _dashboard(run_id: str, who: Who) -> dict:
 
 
 @app.post("/api/runs/{run_id}/dashboard")
-async def start_scm_dashboard(run_id: str) -> dict:
-    run = _run_or_404(run_id)
+async def start_scm_dashboard(run_id: str, user: Principal = Depends(current_user)) -> dict:
+    run = _own_run_or_404(run_id, user)  # rewrites the run's dashboard -> owner only
     if run.get("engine") != "scm" or run.get("status") != "done":
         raise HTTPException(409, "Dashboard přes AI lze vytvořit pro dokončený SCM běh.")
-    from .causal.service import refresh_scm_dashboard
-
-    return {"job_id": jobs.start("dashboard", lambda job: refresh_scm_dashboard(run_id, job)).id}
+    return _start("dashboard", user, {"run_id": run_id}, run_id=run_id)
 
 
 @app.get("/api/runs/{run_id}/ground-truth")

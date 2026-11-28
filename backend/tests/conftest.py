@@ -7,9 +7,12 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# Never load the developer's .env (it may hold the production Supabase URL + secret key, or a Gemini key).
+os.environ["STORY2DATA_NO_DOTENV"] = "1"
 # Existing tests run as the local dev user; auth tests switch AUTH_DISABLED off explicitly.
 os.environ["AUTH_DISABLED"] = "1"
-for _k in ("SUPABASE_URL", "SUPABASE_SECRET_KEY", "SUPABASE_PUBLISHABLE_KEY", "VERCEL_ENV", "APP_ENV"):
+for _k in ("SUPABASE_URL", "SUPABASE_SECRET_KEY", "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_PUBLISHABLE_KEY",
+           "SUPABASE_ANON_KEY", "SUPABASE_JWKS_URL", "SUPABASE_JWT_SECRET", "GEMINI_API_KEY", "VERCEL_ENV", "APP_ENV"):
     os.environ.pop(_k, None)
 
 
@@ -29,6 +32,10 @@ def isolated_env(tmp_path, monkeypatch):
     client.reset_llm()
     meta.set_meta(None)
     blobs.set_blobs(None, override=False)
+    # hard guard: a test must never talk to a real Supabase project
+    _s = config.get_settings()
+    assert not _s.supabase_secret_key and not _s.gemini_api_key and \
+        (not _s.supabase_url or _s.supabase_url == "https://p.supabase.co"), "tests must not use real credentials"
     from app.auth import deps
     deps._profiles.clear()
     deps.set_verifier(None)

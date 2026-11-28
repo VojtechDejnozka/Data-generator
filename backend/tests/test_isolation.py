@@ -187,3 +187,10 @@ def test_blocked_user_rejected(world, auth_env):
     assert r.status_code == 403 and "zablokovan" in r.json()["detail"]
     assert get_meta().get_profile(B)["status"] == "blocked"
     assert c.patch(f"/api/admin/users/{ADMIN}", json={"status": "blocked"}, headers=hadm).status_code == 400
+
+
+def test_ai_dashboard_refresh_owner_only(world):
+    c, ha, hb, rid = world["c"], world["ha"], world["hb"], world["rid"]
+    assert c.post(f"/api/runs/{rid}/dashboard", headers=hb).status_code == 404  # foreign run does not exist
+    r = c.post(f"/api/runs/{rid}/dashboard", headers=ha)  # classic (non-SCM) run
+    assert r.status_code == 409 and "SCM" in r.json()["detail"]

@@ -23,7 +23,7 @@ log = logging.getLogger("quota")
 
 GENERATION_KINDS = ("run", "whatif", "doc_run")
 LLM_KINDS = ("plan", "replan", "run", "whatif", "doc_plan", "doc_replan", "doc_run", "detective", "observe",
-             "difficulty", "commentary")
+             "difficulty", "commentary", "dashboard")
 
 
 class QuotaExceeded(HTTPException):
