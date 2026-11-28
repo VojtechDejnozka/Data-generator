@@ -26,10 +26,28 @@ def _flag(name: str, default: str = "0") -> bool:
 
 DEV_USER_ID = "00000000-0000-4000-a000-00000000d0e0"  # owner of everything when AUTH_DISABLED=1
 
+PROVIDERS = ("openai", "gemini")
+# Default model chains per provider (overridable via <PROVIDER>_STRONG_MODEL / STRONG_MODEL etc.).
+DEFAULT_MODELS: dict[str, dict[str, str]] = {
+    "openai": {"STRONG_MODEL": "gpt-6-luna", "STRONG_FALLBACK_MODELS": "",
+               "CHEAP_MODEL": "gpt-6-luna", "CHEAP_FALLBACK_MODELS": ""},
+    "gemini": {"STRONG_MODEL": "gemini-4-carbon",
+               "STRONG_FALLBACK_MODELS": "gemini-3.8-flash,gemini-3.5-flash,gemini-3.5-flash-lite",
+               "CHEAP_MODEL": "gemini-3.5-flash-lite", "CHEAP_FALLBACK_MODELS": "gemini-3.1-flash-lite,gemini-3.6-flash"},
+}
+
+
+def provider_for_model(model: str) -> str:
+    """Which API serves `model`: Gemini/Gemma names go to Google, everything else to OpenAI."""
+    m = (model or "").strip().lower()
+    return "gemini" if m.startswith(("gemini", "gemma", "models/")) else "openai"
+
 
 @dataclass
 class Settings:
     openai_api_key: str = ""
+    gemini_api_key: str = ""
+    llm_provider: str = "openai"   # primary provider (picks default models); each model is routed by its name
     strong_model: str = "gpt-6-luna"
     strong_fallbacks: list[str] = field(default_factory=list)
     cheap_model: str = "gpt-6-luna"
@@ -72,8 +90,16 @@ class Settings:
 
     @property
     def mock(self) -> bool:
-        # Without a key we can only run in mock mode.
-        return self.llm_mock or not self.openai_api_key
+        # Without any key we can only run in mock mode.
+        return self.llm_mock or not (self.openai_api_key or self.gemini_api_key)
+
+    def api_key_for(self, provider: str) -> str:
+        return self.gemini_api_key if provider == "gemini" else self.openai_api_key
+
+    @property
+    def providers(self) -> list[str]:
+        """Providers that have an API key configured."""
+        return [p for p in PROVIDERS if self.api_key_for(p)]
 
     @property
     def is_production(self) -> bool:
@@ -105,6 +131,8 @@ def assert_safe_config(s: "Settings") -> None:
         raise ConfigError("SUPABASE_PUBLISHABLE_KEY is required when SUPABASE_URL is set")
     if not s.auth_disabled and not (s.jwks_url or s.supabase_jwt_secret):
         raise ConfigError("configure SUPABASE_URL (JWKS) for authentication, or AUTH_DISABLED=1 for local dev")
+    if s.llm_provider not in PROVIDERS:
+        raise ConfigError(f"invalid LLM_PROVIDER {s.llm_provider!r} (auto | openai | gemini)")
     if s.signup_mode not in ("open", "email_allowlist", "invite_only"):
         raise ConfigError(f"invalid SIGNUP_MODE {s.signup_mode!r}")
 
@@ -116,16 +144,38 @@ def _resolve(p: str, default: Path) -> Path:
     return path if path.is_absolute() else (BACKEND_DIR / path).resolve()
 
 
+def _resolve_provider(openai_key: str, gemini_key: str) -> str:
+    """LLM_PROVIDER=openai|gemini, or auto (default): OpenAI when its key is set, else Gemini when its key is set."""
+    p = os.getenv("LLM_PROVIDER", "auto").strip().lower() or "auto"
+    if p != "auto":
+        return p  # validated in assert_safe_config
+    if openai_key:
+        return "openai"
+    return "gemini" if gemini_key else "openai"
+
+
+def _model_env(provider: str, name: str) -> str:
+    """<PROVIDER>_<NAME> (e.g. GEMINI_STRONG_MODEL) > generic <NAME> (STRONG_MODEL) > provider default."""
+    for var in (f"{provider.upper()}_{name}", name):
+        v = os.getenv(var)
+        if v is not None and v.strip():
+            return v.strip()
+    return DEFAULT_MODELS.get(provider, DEFAULT_MODELS["openai"])[name]
+
+
 @lru_cache
 def get_settings() -> Settings:
+    openai_key = os.getenv("OPENAI_API_KEY", "").strip()
+    gemini_key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
+    provider = _resolve_provider(openai_key, gemini_key)
     s = Settings(
-        openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
-        strong_model=os.getenv("OPENAI_STRONG_MODEL", "gpt-6-luna").strip(),
-        strong_fallbacks=_list(
-            os.getenv("OPENAI_STRONG_FALLBACK_MODELS", "")
-        ),
-        cheap_model=os.getenv("OPENAI_CHEAP_MODEL", "gpt-6-luna").strip(),
-        cheap_fallbacks=_list(os.getenv("OPENAI_CHEAP_FALLBACK_MODELS", "")),
+        openai_api_key=openai_key,
+        gemini_api_key=gemini_key,
+        llm_provider=provider,
+        strong_model=_model_env(provider, "STRONG_MODEL"),
+        strong_fallbacks=_list(_model_env(provider, "STRONG_FALLBACK_MODELS")),
+        cheap_model=_model_env(provider, "CHEAP_MODEL"),
+        cheap_fallbacks=_list(_model_env(provider, "CHEAP_FALLBACK_MODELS")),
         llm_mock=_flag("LLM_MOCK"),
         llm_cache=_flag("LLM_CACHE", "1"),
         max_concurrency=int(os.getenv("LLM_MAX_CONCURRENCY", "4")),

@@ -56,7 +56,7 @@ export default function App() {
             {health?.ok && (health.mock
               ? <span className="chip bg-amber-50 text-amber-800 border border-amber-200" title="LLM_MOCK=1 nebo chybí klíč">MOCK režim (fixtures)</span>
               : <span className="chip bg-emerald-50 text-emerald-800 border border-emerald-200" title={`fallback: ${health.strong_fallbacks?.join(', ')}`}>
-                  OpenAI · STRONG {health.strong_model} · CHEAP {health.cheap_model}
+                  {({ openai: 'OpenAI', gemini: 'Gemini' } as Record<string, string>)[health.provider] ?? 'LLM'} · STRONG {health.strong_model} · CHEAP {health.cheap_model}
                 </span>)}
           </div>
           </div>

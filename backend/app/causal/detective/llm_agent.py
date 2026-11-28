@@ -1,4 +1,4 @@
-"""LLM detective: a blind, tool-using analyst on top of the existing LLM client (OpenAI).
+"""LLM detective: a blind, tool-using analyst on top of the existing LLM client (OpenAI / Gemini).
 
 Isolation: the agent receives only the neutral public schema, the generic task and the outputs of
 its own tool calls. It never sees the story, the SCM, generation parameters, ground truth, the
@@ -19,6 +19,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
+from ...config import provider_for_model
 from ...llm.client import LLMError, get_llm
 from ..contracts import DetectiveConfig
 from ..results import DetectiveResult, EstimatedEffect, InferredRelationship, KeyEvent
@@ -175,4 +176,4 @@ async def run_llm_detective(toolbox: Toolbox, config: DetectiveConfig, progress=
                "model_chain": llm.models_for(config.model_role), "tools": Toolbox.TOOLS,
                "budget": {"max_steps": config.max_steps, "max_queries": config.max_queries},
                "steps_used": len(transcript), "session": nonce,
-               "provider": "openai", "strong_model": s.strong_model, "cheap_model": s.cheap_model})
+               "provider": ",".join(dict.fromkeys(provider_for_model(m) for m in llm.models_for(config.model_role))), "strong_model": s.strong_model, "cheap_model": s.cheap_model})

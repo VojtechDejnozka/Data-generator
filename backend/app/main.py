@@ -194,7 +194,8 @@ def _session_or_404(sid: str, user: Principal) -> dict:
 @app.get("/api/health")
 def health() -> dict:
     s = get_settings()
-    return {"ok": True, "mock": s.mock, "has_key": bool(s.gemini_api_key), "strong_model": s.strong_model,
+    return {"ok": True, "mock": s.mock, "has_key": bool(s.providers), "provider": s.llm_provider,
+            "providers": s.providers, "strong_model": s.strong_model,
             "strong_fallbacks": s.strong_fallbacks, "cheap_model": s.cheap_model, "cheap_fallbacks": s.cheap_fallbacks,
             "auth": "disabled" if s.auth_disabled else "supabase", "signup_mode": s.signup_mode,
             "storage": "supabase" if s.use_supabase else "local"}

@@ -1,4 +1,4 @@
-"""Per-user cost protection for the (paid / rate-limited) Gemini key.
+"""Per-user cost protection for the (paid / rate-limited) LLM API key.
 
 * daily quotas (UTC day): generation runs (QUOTA_RUNS_PER_DAY) and LLM tokens (QUOTA_TOKENS_PER_DAY);
 * rate limit: at most RATE_LIMIT_JOBS_PER_MINUTE started jobs per user in any 60 s window – counted in the

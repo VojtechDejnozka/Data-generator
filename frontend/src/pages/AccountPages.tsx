@@ -51,7 +51,7 @@ export function Account() {
             <tr><td>Tokeny LLM</td><td className="text-right">{fmt(q.tokens_used)} / {fmt(q.tokens_limit)}</td></tr>
             <tr><td>Obnovení</td><td className="text-right">{new Date(q.resets_at).toLocaleString('cs-CZ')}</td></tr>
           </tbody></table>)}
-        <p className="text-xs text-slate-500">Limit chrání sdílený klíč ke Gemini API. Mock režim tokeny nepočítá.</p>
+        <p className="text-xs text-slate-500">Limit chrání sdílený klíč k LLM API. Mock režim tokeny nepočítá.</p>
       </section>
       <form className="space-y-2" onSubmit={saveName}>
         <h2 className="font-semibold">Zobrazované jméno</h2>

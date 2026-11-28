@@ -139,3 +139,114 @@ def test_mock_mode_uses_fixtures():
     assert get_settings().mock
     out = run(get_llm().structured(role="cheap", task="dim_customer_names", prompt="x", schema=NamePools))
     assert out.male_first == MALE_FIRST
+
+
+# --------------------------------------------------------------------------- Gemini + provider routing
+class FakeGeminiResp:
+    def __init__(self, text):
+        self.text = text
+        self.candidates = [types.SimpleNamespace(finish_reason=types.SimpleNamespace(name="STOP"))]
+        self.usage_metadata = types.SimpleNamespace(prompt_token_count=80, candidates_token_count=20,
+                                                    thoughts_token_count=10)
+
+
+class FakeGemini:
+    def __init__(self, script):
+        self.script = script
+        self.calls = []
+        outer = self
+
+        class Models:
+            async def generate_content(self, model, contents, config):
+                outer.calls.append((model, contents, config))
+                item = outer.script[model].pop(0)
+                if isinstance(item, Exception):
+                    raise item
+                return FakeGeminiResp(item)
+
+        self.aio = types.SimpleNamespace(models=Models())
+
+
+def gemini_error(code, message):
+    from google.genai import errors
+    return errors.APIError(code, {"error": {"code": code, "message": message, "status": "X"}})
+
+
+def test_gemini_only_key_uses_gemini_with_schema(tmp_path):
+    s = Settings(gemini_api_key="g", llm_provider="gemini", strong_model="gemini-4-carbon",
+                 strong_fallbacks=["gemini-3.8-flash"], cheap_model="gemini-3.5-flash-lite", cheap_fallbacks=[],
+                 llm_mock=False, cache_dir=tmp_path)
+    assert not s.mock and s.providers == ["gemini"]
+    c = LLMClient(s)
+    c._gemini = FakeGemini({"gemini-4-carbon": [gemini_error(429, "Quota exceeded, limit: 0")],
+                            "gemini-3.8-flash": ['{"names": ["g"], "count": 1}']})
+    tr = UsageTracker()
+    with usage_scope(tr):
+        out = run(c.structured(role="strong", task="t", prompt="p", schema=Out, system="sys", temperature=0.3))
+    assert out.names == ["g"]
+    assert [m for m, _, _ in c._gemini.calls] == ["gemini-4-carbon", "gemini-3.8-flash"]
+    cfg = c._gemini.calls[-1][2]
+    assert cfg.response_json_schema["properties"]["count"]["type"] == "integer"
+    assert cfg.system_instruction == "sys" and cfg.temperature == 0.3
+    rec = tr.calls[0]
+    assert rec.model == "gemini-3.8-flash" and rec.prompt_tokens == 80 and rec.output_tokens == 30
+    assert rec.thoughts_tokens == 10 and rec.cost_usd > 0
+    assert c.models_for("strong") == ["gemini-3.8-flash"]
+
+
+def test_gemini_schema_rejected_falls_back_to_json_mode(tmp_path):
+    s = Settings(gemini_api_key="g", cheap_model="gemini-3.5-flash-lite", cheap_fallbacks=[], cache_dir=tmp_path)
+    c = LLMClient(s)
+    c._gemini = FakeGemini({"gemini-3.5-flash-lite": [gemini_error(400, "Invalid JSON schema"),
+                                                      '{"names": [], "count": 0}']})
+    assert run(c.structured(role="cheap", task="t", prompt="p", schema=Out)).count == 0
+    model, contents, cfg = c._gemini.calls[-1]
+    assert cfg.response_json_schema is None and "JSON schema" in contents
+
+
+def test_mixed_chain_routes_per_model_and_skips_providers_without_key(tmp_path):
+    s = Settings(openai_api_key="k", gemini_api_key="g", strong_model="gpt-6-luna",
+                 strong_fallbacks=["gemini-3.8-flash"], cache_dir=tmp_path)
+    c = LLMClient(s)
+    c._client = FakeSDK({"gpt-6-luna": [api_error(429, "Quota", code="insufficient_quota")]})
+    c._gemini = FakeGemini({"gemini-3.8-flash": ['{"names": ["mix"], "count": 3}']})
+    assert run(c.structured(role="strong", task="t", prompt="p", schema=Out)).names == ["mix"]
+    assert len(c._client.calls) == 1 and len(c._gemini.calls) == 1
+    # without a Gemini key the Gemini fallback is not even tried
+    only_openai = LLMClient(Settings(openai_api_key="k", strong_model="gpt-6-luna",
+                                     strong_fallbacks=["gemini-3.8-flash"], cache_dir=tmp_path))
+    assert only_openai.models_for("strong") == ["gpt-6-luna"]
+
+
+def test_settings_pick_provider_and_models_from_env(monkeypatch):
+    from app import config
+
+    for var in ("OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "LLM_PROVIDER", "STRONG_MODEL",
+                "STRONG_FALLBACK_MODELS", "CHEAP_MODEL", "CHEAP_FALLBACK_MODELS", "OPENAI_STRONG_MODEL",
+                "GEMINI_STRONG_MODEL", "OPENAI_CHEAP_MODEL", "GEMINI_CHEAP_MODEL", "OPENAI_STRONG_FALLBACK_MODELS",
+                "GEMINI_STRONG_FALLBACK_MODELS", "OPENAI_CHEAP_FALLBACK_MODELS", "GEMINI_CHEAP_FALLBACK_MODELS"):
+        monkeypatch.delenv(var, raising=False)
+
+    def fresh():
+        config.get_settings.cache_clear()
+        try:
+            return config.get_settings()
+        finally:
+            config.get_settings.cache_clear()
+
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    s = fresh()
+    assert s.llm_provider == "gemini" and s.strong_model.startswith("gemini") and not s.mock
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    s = fresh()
+    assert s.llm_provider == "openai" and s.strong_model == "gpt-6-luna" and s.providers == ["openai", "gemini"]
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_STRONG_MODEL", "gemini-4-neon")
+    s = fresh()
+    assert s.llm_provider == "gemini" and s.strong_model == "gemini-4-neon"
+    assert s.cheap_model == config.DEFAULT_MODELS["gemini"]["CHEAP_MODEL"]
+    monkeypatch.setenv("LLM_PROVIDER", "auto")
+    monkeypatch.delenv("OPENAI_API_KEY")
+    monkeypatch.setenv("STRONG_MODEL", "gemini-3.8-flash")  # legacy generic variable still honoured
+    monkeypatch.delenv("GEMINI_STRONG_MODEL")
+    assert fresh().strong_model == "gemini-3.8-flash"

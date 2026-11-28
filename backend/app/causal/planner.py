@@ -401,9 +401,9 @@ async def plan_story(inp: ScenarioInput) -> PlannerResponse:
 def explain_failure(msg: str) -> str:
     """Readable summary of an LLM planning failure (which models hit quota, which returned invalid output)."""
     parts = [p.strip() for p in msg.split(" – ", 1)[-1].split(";") if p.strip()]
-    quota = sorted({p.split(":")[0] for p in parts if "429" in p or "insufficient_quota" in p})
+    quota = sorted({p.split(":")[0] for p in parts if "429" in p or "insufficient_quota" in p or "RESOURCE_EXHAUSTED" in p})
     invalid = [p for p in parts if "invalid output" in p]
-    out = ["OpenAI nevrátilo spustitelný kauzální model."]
+    out = ["LLM nevrátilo spustitelný kauzální model."]
     if quota:
         out.append(f"Vyčerpaná kvóta: {', '.join(quota)}.")
     if invalid:
@@ -411,7 +411,7 @@ def explain_failure(msg: str) -> str:
         out.append(f"Neplatný výstup ({', '.join(models)}), poslední chyba: {invalid[-1].split('invalid output:', 1)[-1].strip()[:300]}")
     if invalid and not quota:
         return " ".join(out)
-    out.append("Zkuste to znovu později / s modelem s volnou kvótou (OPENAI_STRONG_MODEL, OPENAI_STRONG_FALLBACK_MODELS v .env), "
+    out.append("Zkuste to znovu později / s modelem s volnou kvótou (STRONG_MODEL, STRONG_FALLBACK_MODELS v .env), "
                "zjednodušte příběh, nebo použijte mock režim (LLM_MOCK=1) a referenční scénáře.")
     return " ".join(out)
 

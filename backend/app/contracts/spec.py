@@ -1,6 +1,6 @@
 """ScenarioSpec – the central contract between planner, generator, validator and UI.
 
-The models double as JSON schemas for OpenAI structured output, so they are kept
+The models double as JSON schemas for OpenAI / Gemini structured output, so they are kept
 reasonably flat: no free-form dicts, values that may be of several types are strings.
 """
 from __future__ import annotations

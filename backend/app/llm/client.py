@@ -1,4 +1,7 @@
-"""LLM client with two roles (STRONG / CHEAP) on top of the official OpenAI SDK.
+"""LLM client with two roles (STRONG / CHEAP) on top of the official OpenAI and google-genai SDKs.
+
+Each model is routed to its provider by name (``gemini-*`` -> Gemini API, otherwise OpenAI Responses API),
+so fallback chains may even mix providers; models whose provider has no API key are skipped.
 
 Features: structured output (JSON schema derived from Pydantic), validation + retry with the error
 message, exponential backoff on 429/5xx, model fallback chains (free-tier keys get quota 0 on
@@ -21,9 +24,10 @@ from typing import Any, Literal, Optional, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from ..config import Settings, get_settings
+from ..config import Settings, get_settings, provider_for_model
 from ..storage.text_files import read_saved_text
 from .pricing import estimate_cost
+from .schema_utils import gemini_schema
 
 log = logging.getLogger("llm")
 T = TypeVar("T", bound=BaseModel)
@@ -35,6 +39,27 @@ MAX_TRANSPORT_ATTEMPTS = 4
 
 class LLMError(RuntimeError):
     pass
+
+
+class _ApiError(Exception):
+    """Provider-neutral HTTP error from an LLM API."""
+
+    def __init__(self, code: int, msg: str, *, quota_zero: bool = False, schema_rejected: bool = False):
+        super().__init__(msg)
+        self.code, self.msg, self.quota_zero, self.schema_rejected = code, msg, quota_zero, schema_rejected
+
+
+class _NetworkError(Exception):
+    pass
+
+
+@dataclass
+class _Reply:
+    text: str
+    prompt_tokens: int = 0
+    output_tokens: int = 0  # incl. thinking/reasoning tokens
+    thoughts_tokens: int = 0
+    incomplete: str = ""    # non-empty when the response was cut off
 
 
 # --------------------------------------------------------------------------- usage accounting
@@ -146,7 +171,8 @@ def _extract_json(text: str) -> Any:
 class LLMClient:
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or get_settings()
-        self._client = None
+        self._client = None  # OpenAI SDK (lazy)
+        self._gemini = None  # google-genai SDK (lazy)
         self._sems: dict[int, asyncio.Semaphore] = {}
         self._dead_models: dict[str, float] = {}  # model -> until timestamp
 
@@ -163,6 +189,17 @@ class LLMClient:
                                        timeout=self.settings.request_timeout_s, max_retries=0)
         return self._client
 
+    def _gemini_sdk(self):
+        if self._gemini is None:
+            from google import genai
+            from google.genai import types
+
+            self._gemini = genai.Client(
+                api_key=self.settings.gemini_api_key,
+                http_options=types.HttpOptions(timeout=int(self.settings.request_timeout_s * 1000)),
+            )
+        return self._gemini
+
     def _sem(self) -> asyncio.Semaphore:
         loop_id = id(asyncio.get_running_loop())
         if loop_id not in self._sems:
@@ -175,7 +212,7 @@ class LLMClient:
         now = time.time()
         seen: list[str] = []
         for m in chain:
-            if m and m not in seen and self._dead_models.get(m, 0) < now:
+            if m and m not in seen and self._dead_models.get(m, 0) < now and s.api_key_for(provider_for_model(m)):
                 seen.append(m)
         return seen or [chain[0]]
 
@@ -203,7 +240,8 @@ class LLMClient:
         for contracts with free-form parameter objects that structured output cannot express.
         ``max_validation_retries`` overrides the default number of repair rounds with the error message."""
         schema_json = json.dumps(schema.model_json_schema(), sort_keys=True)
-        key = _hash("openai-responses", *self.models_for(role), role, task, system or "", prompt, schema_json, str(temperature),
+        models = [f"{provider_for_model(m)}:{m}" for m in self.models_for(role)]
+        key = _hash("llm-v2", *models, role, task, system or "", prompt, schema_json, str(temperature),
                     "json" if json_mode else "")
         tracker = current_tracker()
 
@@ -241,18 +279,86 @@ class LLMClient:
                                                         ensure_ascii=False), encoding="utf-8")
         return obj
 
+    # -- provider adapters -------------------------------------------------------
+    async def _call_openai(self, model: str, prompt: str, system: str | None, schema: type[BaseModel],
+                           schema_dict: dict[str, Any] | None, temperature: float | None) -> _Reply:
+        from openai import APIConnectionError, APIStatusError
+
+        fmt: dict[str, Any] = {"type": "json_object"}
+        if schema_dict is not None:
+            fmt = {"type": "json_schema", "name": schema.__name__, "schema": schema_dict, "strict": False}
+        options: dict[str, Any] = {}
+        if system:
+            options["instructions"] = system
+        if temperature is not None and model.startswith(("gpt-4", "gpt-3.5")):
+            options["temperature"] = temperature
+        try:
+            resp = await self._sdk().responses.create(model=model, input=prompt, text={"format": fmt},
+                                                      store=False, **options)
+        except APIStatusError as e:
+            msg = str(e)
+            code = e.status_code
+            raise _ApiError(code, msg, quota_zero=code == 429 and e.code == "insufficient_quota",
+                            schema_rejected=code == 400 and ("schema" in msg.lower() or e.param == "text.format"))
+        except APIConnectionError as e:
+            raise _NetworkError(f"{type(e).__name__} {e}") from e
+        usage = resp.usage
+        reply = _Reply(text=resp.output_text or "")
+        if usage:
+            reply.prompt_tokens = usage.input_tokens or 0
+            reply.output_tokens = usage.output_tokens or 0
+            if usage.output_tokens_details:
+                reply.thoughts_tokens = usage.output_tokens_details.reasoning_tokens or 0
+        if resp.status != "completed":
+            reply.incomplete = getattr(resp.incomplete_details, "reason", None) or resp.status or "incomplete"
+        return reply
+
+    async def _call_gemini(self, model: str, prompt: str, system: str | None,
+                           schema_dict: dict[str, Any] | None, temperature: float | None) -> _Reply:
+        import httpx
+        from google.genai import errors, types
+
+        cfg = types.GenerateContentConfig(
+            system_instruction=system,
+            response_mime_type="application/json",
+            response_json_schema=schema_dict,
+            temperature=temperature,
+        )
+        try:
+            resp = await self._gemini_sdk().aio.models.generate_content(model=model, contents=prompt, config=cfg)
+        except errors.APIError as e:
+            msg = str(e)
+            code = getattr(e, "code", 0) or 0
+            raise _ApiError(code, msg, quota_zero=code == 429 and "limit: 0" in msg,
+                            schema_rejected=code == 400 and "schema" in msg.lower())
+        except httpx.TransportError as e:
+            raise _NetworkError(f"{type(e).__name__} {e}") from e
+        usage = resp.usage_metadata
+        thoughts = (usage.thoughts_token_count or 0) if usage else 0
+        reply = _Reply(text=resp.text or "", thoughts_tokens=thoughts,
+                       prompt_tokens=(usage.prompt_token_count or 0) if usage else 0,
+                       output_tokens=((usage.candidates_token_count or 0) + thoughts) if usage else 0)
+        cands = getattr(resp, "candidates", None) or []
+        reason = getattr(cands[0], "finish_reason", None) if cands else None
+        reason = getattr(reason, "name", reason)
+        if reason and str(reason) not in ("STOP", "FINISH_REASON_UNSPECIFIED"):
+            reply.incomplete = str(reason)
+        return reply
+
     # -- internals ---------------------------------------------------------------
     async def _call_with_retries(self, role, task, prompt, schema, system, temperature, key, json_mode=False,
                                  max_validation_retries=None):
-        from openai import APIConnectionError, APIStatusError
-
-        schema_dict = schema.model_json_schema()
         errors_seen: list[str] = []
         total = CallRecord(role=role, task=task, model="", cache_key=key, attempts=0)
         t0 = time.time()
 
         retries = MAX_VALIDATION_RETRIES if max_validation_retries is None else max_validation_retries
         for model in self.models_for(role):
+            provider = provider_for_model(model)
+            if not self.settings.api_key_for(provider):
+                errors_seen.append(f"{model}: missing {provider.upper()}_API_KEY")
+                continue
+            schema_dict = gemini_schema(schema) if provider == "gemini" else schema.model_json_schema()
             use_schema = not json_mode
             feedback: list[str] = []
             transport_attempt = 0
@@ -267,26 +373,21 @@ class LLMClient:
                         "\n\nYour previous answer was invalid. Fix these problems and answer again:\n- "
                         + "\n- ".join(feedback[-2:])
                     )
-                fmt = {"type": "json_object"}
-                if use_schema:
-                    fmt = {"type": "json_schema", "name": schema.__name__, "schema": schema_dict, "strict": False}
-                options: dict[str, Any] = {}
-                if system:
-                    options["instructions"] = system
-                if temperature is not None and model.startswith(("gpt-4", "gpt-3.5")):
-                    options["temperature"] = temperature
                 try:
-                    resp = await self._sdk().responses.create(model=model, input=full_prompt, text={"format": fmt},
-                                                              store=False, **options)
-                except APIStatusError as e:
-                    msg = str(e)
-                    code = e.status_code
+                    if provider == "gemini":
+                        reply = await self._call_gemini(model, full_prompt, system,
+                                                        schema_dict if use_schema else None, temperature)
+                    else:
+                        reply = await self._call_openai(model, full_prompt, system, schema,
+                                                        schema_dict if use_schema else None, temperature)
+                except _ApiError as e:
+                    msg, code = e.msg, e.code
                     errors_seen.append(f"{model}: {code} {msg[:160]}")
                     log.warning("LLM %s %s attempt %d failed: %s", model, task, transport_attempt, msg[:200])
-                    if code == 429 and e.code == "insufficient_quota":
+                    if e.quota_zero:
                         self._dead_models[model] = time.time() + 3600
                         break  # no quota on this model at all -> next model
-                    if code == 400 and use_schema and ("schema" in msg.lower() or e.param == "text.format"):
+                    if e.schema_rejected and use_schema:
                         use_schema = False  # schema too complex -> plain JSON mode
                         continue
                     if code in (404, 403):
@@ -301,7 +402,7 @@ class LLMClient:
                         await asyncio.sleep(delay)
                         continue
                     break  # give up on this model
-                except (APIConnectionError, asyncio.TimeoutError, OSError) as e:
+                except (_NetworkError, asyncio.TimeoutError, OSError) as e:
                     errors_seen.append(f"{model}: {type(e).__name__} {e}")
                     if transport_attempt < MAX_TRANSPORT_ATTEMPTS - 1:
                         transport_attempt += 1
@@ -309,19 +410,15 @@ class LLMClient:
                         continue
                     break
 
-                usage = resp.usage
                 total.model = model
-                if usage:
-                    total.prompt_tokens += usage.input_tokens
-                    total.output_tokens += usage.output_tokens
-                    if usage.output_tokens_details:
-                        total.thoughts_tokens += usage.output_tokens_details.reasoning_tokens or 0
-                    total.cost_usd += estimate_cost(model, usage.input_tokens, usage.output_tokens)
+                total.prompt_tokens += reply.prompt_tokens
+                total.output_tokens += reply.output_tokens
+                total.thoughts_tokens += reply.thoughts_tokens
+                total.cost_usd = round(total.cost_usd + estimate_cost(model, reply.prompt_tokens, reply.output_tokens), 6)
                 try:
-                    if resp.status != "completed":
-                        reason = getattr(resp.incomplete_details, "reason", None) or resp.status
-                        raise ValueError(f"OpenAI response did not complete ({reason})")
-                    raw = _extract_json(resp.output_text)
+                    if reply.incomplete:
+                        raise ValueError(f"{provider} response did not complete ({reply.incomplete})")
+                    raw = _extract_json(reply.text)
                     obj = schema.model_validate(raw)
                 except (json.JSONDecodeError, ValidationError, ValueError) as e:
                     err = str(e)[:1500]
