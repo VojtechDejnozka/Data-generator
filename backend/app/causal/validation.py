@@ -74,6 +74,19 @@ def require_large_plan(spec: SCMSpec) -> None:
                          "a alespoň dvě s 5 000 nebo více plánovanými řádky. Rozdělte fakta podle významu řádku.")
 
 
+def unclipped_positive_poisson_count(variable: VariableSpec) -> bool:
+    """Poisson counts can include zero even when the declared domain excludes it."""
+    minimum = variable.constraints.min
+    mechanism = variable.mechanism
+    distribution = mechanism.params.get("distribution")
+    poisson = mechanism.type == "poisson_regression" or (
+        mechanism.type == "exogenous" and isinstance(distribution, dict) and distribution.get("family") == "poisson"
+    )
+    return (poisson and variable.data_type == "int" and not variable.constraints.clip
+            and minimum is not None and minimum > 0 and float(minimum).is_integer()
+            and (variable.constraints.max is None or variable.constraints.max >= minimum))
+
+
 def validate_spec(spec: SCMSpec) -> ValidationReport:
     rep = ValidationReport()
 
@@ -191,6 +204,9 @@ def validate_spec(spec: SCMSpec) -> ValidationReport:
             err("variable.categories", tgt, "categorical variable needs 'categories'")
         if v.constraints.min is not None and v.constraints.max is not None and v.constraints.min > v.constraints.max:
             err("variable.constraints", tgt, "min > max")
+        if unclipped_positive_poisson_count(v):
+            err("variable.poisson_min", tgt, "Poissonovo rozdělení může vrátit hodnotu pod zadaným minimem.",
+                "Zapněte omezení hodnot na zadané meze nebo upravte rozdělení.", severity="warning")
         if v.data_type in ("category", "text") and v.parents and any(
                 types.get(p.variable) in ("category", "text") and p.aggregation not in (None, "count") for p in v.parents):
             err("variable.types", tgt, "numeric aggregation of a categorical parent")
@@ -594,7 +610,9 @@ def _relational(world: CleanWorld, frames: _Frames, rep: ValidationReport) -> No
                         int(((x > c.max).sum()) if c.max is not None else 0)
                     rep.add(check_id=f"range:{v.variable_id}", layer="relational", target=v.variable_id,
                             expected=f"[{c.min}, {c.max}]", observed=f"{bad} out of range", passed=bad == 0,
-                            explanation="domain constraint")
+                            explanation=f"{e.name}.{v.column or v.variable_id} mimo rozsah [{c.min}, {c.max}]",
+                            suggested_fix=("Zapněte omezení hodnot na zadané meze nebo upravte mechanismus."
+                                           if not c.clip else "Zkontrolujte meze a zaokrouhlení proměnné."))
             if v.data_type == "category" and v.categories:
                 bad = int((~col.astype(str).isin(v.categories)).sum())
                 rep.add(check_id=f"domain:{v.variable_id}", layer="relational", target=v.variable_id,

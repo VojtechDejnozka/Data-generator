@@ -319,6 +319,31 @@ def runs_list(user: Principal = Depends(current_user)) -> list[dict]:
     return [store.list_item(m, user.id) for m in get_meta().list_runs(user.viewer)]
 
 
+@app.post("/api/runs/{run_id}/review")
+def review_from_run(run_id: str, user: Principal = Depends(current_user)) -> dict:
+    run = _run_or_404(run_id, user)
+    spec = ScenarioSpec.model_validate(run["spec"])
+    original = spec.scm.meta.original_story if spec.scm else spec.story.logline
+    inp = ScenarioInput.model_validate(run.get("input") or {
+        "story": (original or spec.meta.name)[:8000].ljust(10, "."),
+        "seed": spec.meta.seed,
+        "engine": "scm" if spec.scm else "module",
+    })
+    data = plan_session_data(inp, PlannerResponse(spec=spec))
+    data["parent_run_id"] = run_id
+    return {"session_id": create_session(user.id, data)}
+
+
+@app.get("/api/runs/{run_id}/scm.json")
+def download_run_scm(run_id: str, user: Principal = Depends(current_user)) -> Response:
+    run = _run_or_404(run_id, user)
+    model = (run.get("spec") or {}).get("scm")
+    if not model:
+        raise HTTPException(404, "Běh nemá SCM model.")
+    return Response(json.dumps(model, ensure_ascii=False, indent=2), media_type="application/json",
+                    headers={"Content-Disposition": f'attachment; filename="scm-{run_id}.json"'})
+
+
 @app.get("/api/runs/{run_id}")
 def run_detail(run_id: str, user: Principal = Depends(current_user)) -> dict:
     return _detail(run_id, user)
@@ -882,6 +907,7 @@ def scm_validate(scm: SCMSpec) -> dict:
     from .causal.contracts import derive_edges
     from .causal.graph import GraphError, execution_plan
     from .causal.mechanisms import describe
+    from .causal.mapping import scenario_tables
     from .causal.validation import validate_spec as validate_scm
     rep = validate_scm(scm)
     plan = None
@@ -890,7 +916,9 @@ def scm_validate(scm: SCMSpec) -> dict:
         plan = {"pre": p.pre, "loop": p.loop, "post": p.post}
     except (GraphError, ValueError):
         pass
-    return {"report": rep.model_dump(), "edges": [e.model_dump() for e in derive_edges(scm)],
+    return {"report": rep.model_dump(),
+            "tables": [t.model_dump() for t in scenario_tables(scm)] if rep.status != "FAIL" else [],
+            "edges": [e.model_dump() for e in derive_edges(scm)],
             "mechanisms": {v.variable_id: describe(v) for v in scm.variables}, "execution_plan": plan}
 
 

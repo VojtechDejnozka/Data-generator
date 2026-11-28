@@ -96,6 +96,31 @@ function buildOption(spec: ChartSpec): echarts.EChartsCoreOption {
     ? { type: 'scroll', top: 0, textStyle: { color: '#23262b', fontSize: 11 }, itemWidth: 14, itemHeight: 8 }
     : undefined
 
+  if (spec.chart === 'scatter') {
+    const x = spec.x ?? spec.columns[0]
+    const xi = spec.columns.indexOf(x)
+    const si = spec.series ? spec.columns.indexOf(spec.series) : -1
+    const grouped = new Map<string, number[][]>()
+    const y = spec.y?.[0] ?? spec.columns.find((col) => col !== x && col !== spec.series) ?? ''
+    const yi = spec.columns.indexOf(y)
+    for (const row of spec.rows) {
+      if (typeof row[xi] !== 'number' || typeof row[yi] !== 'number') continue
+      const group = si >= 0 ? String(row[si]) : label(y)
+      const points = grouped.get(group) ?? []
+      points.push([row[xi], row[yi]])
+      grouped.set(group, points)
+    }
+    return {
+      color: SERIES,
+      tooltip: { ...tooltip, valueFormatter: (value: Json) => Array.isArray(value) ? value.map(fmt).join(' · ') : fmt(value) },
+      legend: grouped.size > 1 ? { type: 'scroll', top: 0 } : undefined,
+      grid: { left: 55, right: 16, top: grouped.size > 1 ? 42 : 22, bottom: 40, containLabel: true },
+      xAxis: { type: 'value', name: label(x), nameLocation: 'middle', nameGap: 26, ...axisCommon, scale: true },
+      yAxis: { type: 'value', name: label(y), ...axisCommon, scale: true },
+      series: Array.from(grouped, ([name, data]) => ({ name, type: 'scatter', data, symbolSize: 7 })),
+    }
+  }
+
   if (spec.chart === 'pie') {
     return {
       color: SERIES, tooltip: { trigger: 'item', valueFormatter: (v: Json) => fmt(v) },
@@ -110,14 +135,19 @@ function buildOption(spec: ChartSpec): echarts.EChartsCoreOption {
   if (spec.chart === 'heatmap') {
     const names = series.map((s) => s.name)
     const data: Json[] = []
-    let max = 0
-    series.forEach((s, yi) => s.data.forEach((v, xi) => { if (v !== null) { data.push([xi, yi, v]); max = Math.max(max, v) } }))
+    let min = Infinity
+    let max = -Infinity
+    series.forEach((s, yi) => s.data.forEach((v, xi) => {
+      if (typeof v !== 'number') return
+      data.push([xi, yi, v]); min = Math.min(min, v); max = Math.max(max, v)
+    }))
     return {
-      tooltip: { position: 'top', formatter: (p: Json) => `${names[p.value[1]]}<br/>${xs[p.value[0]]}: <b>${fmt(p.value[2])}</b>` },
+      tooltip: { position: 'top', renderMode: 'richText', formatter: (p: Json) => `${names[p.value[1]]}\n${xs[p.value[0]]} · ${fmt(p.value[2])}` },
       grid: { left: 8, right: 16, top: 8, bottom: 56, containLabel: true },
       xAxis: { type: 'category', data: xs, ...axisCommon, splitLine: { show: false } },
       yAxis: { type: 'category', data: names, ...axisCommon, splitLine: { show: false } },
-      visualMap: { min: 0, max: max || 1, calculable: true, orient: 'horizontal', left: 'center', bottom: 0, itemHeight: 120,
+      visualMap: { min: data.length ? min : 0, max: data.length ? (max === min ? min + 1 : max) : 1,
+        calculable: true, orient: 'horizontal', left: 'center', bottom: 0, itemHeight: 120,
         inRange: { color: ['#cce3fd', '#84b9f3', '#338ced', '#1b64be', '#0e3d7e'] }, textStyle: { color: TEXT2 } },
       series: [{ type: 'heatmap', data, itemStyle: { borderColor: '#fff', borderWidth: 2 } }],
     }
@@ -142,10 +172,10 @@ function buildOption(spec: ChartSpec): echarts.EChartsCoreOption {
   }
 
   const stacked = spec.chart === 'stacked_bar'
-  const type = isLine ? 'line' : spec.chart === 'scatter' ? 'scatter' : 'bar'
+  const type = isLine ? 'line' : 'bar'
   return {
     tooltip, legend,
-    grid: { left: 8, right: 16, top: legend ? 32 : 12, bottom: 8, containLabel: true },
+    grid: { left: 8, right: 16, top: legend ? 44 : 25, bottom: 8, containLabel: true },
     xAxis: { type: 'category', data: xs, ...axisCommon, splitLine: { show: false } },
     yAxis: { type: 'value', ...axisCommon, name: series.length === 1 || spec.series ? label(spec.y?.[0] ?? '') : '',
       nameTextStyle: { color: TEXT2, fontSize: 11, align: 'left' } },

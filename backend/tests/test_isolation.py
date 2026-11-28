@@ -83,10 +83,10 @@ def test_user_b_cannot_see_or_touch_user_a_run(world):
     assert any(r["run_id"] == rid for r in c.get("/api/runs", headers=ha).json())
     assert not any(r["run_id"] == rid for r in c.get("/api/runs", headers=hb).json())
     for path in ("", "/report", "/dashboard", "/ground-truth", "/schema", "/llm-calls", "/tables/products",
-                 "/detective", "/doc-sources", "/export.zip", "/db"):
+                 "/detective", "/doc-sources", "/export.zip", "/db", "/scm.json"):
         assert c.get(f"/api/runs/{rid}{path}", headers=hb).status_code == 404, path
     for path, body in (("/query", {"sql": "SELECT 1"}), ("/whatif", {"knob_overrides": {}}),
-                       ("/detective", None), ("/commentary", None), ("/share", {"enabled": True}),
+                       ("/detective", None), ("/commentary", None), ("/share", {"enabled": True}), ("/review", None),
                        ("/download", {"what": "db"}), ("/download", {"what": "zip"})):
         assert c.post(f"/api/runs/{rid}{path}", json=body, headers=hb).status_code == 404, path
     assert c.delete(f"/api/runs/{rid}", headers=hb).status_code == 404

@@ -241,6 +241,10 @@ def test_settings_pick_provider_and_models_from_env(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "k")
     s = fresh()
     assert s.llm_provider == "openai" and s.strong_model == "gpt-6-luna" and s.providers == ["openai", "gemini"]
+    monkeypatch.setenv("STRONG_FALLBACK_MODELS", "gemini-3.8-flash")
+    monkeypatch.setenv("OPENAI_STRONG_FALLBACK_MODELS", "")
+    assert fresh().strong_fallbacks == []
+    monkeypatch.delenv("STRONG_FALLBACK_MODELS")
     monkeypatch.setenv("LLM_PROVIDER", "gemini")
     monkeypatch.setenv("GEMINI_STRONG_MODEL", "gemini-4-neon")
     s = fresh()

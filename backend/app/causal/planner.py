@@ -24,7 +24,8 @@ from . import mechanisms as M
 from .contracts import CausalEdge, DifficultyConfig, EntitySpec, SCMSpec, VariableSpec
 from .engine import key_columns, relation
 from .service import load_reference_scenario, scenario_spec
-from .validation import LARGE_MIN_ROWS, MAX_TOTAL_ROWS, estimate_rows, require_large_plan, validate_spec
+from .validation import (LARGE_MIN_ROWS, MAX_TOTAL_ROWS, estimate_rows, require_large_plan,
+                         unclipped_positive_poisson_count, validate_spec)
 
 SIZE_HINT = {"small": "base entities 3–40 rows, ≤ 60 time steps", "medium": "base entities 5–500 rows, ≤ 180 steps",
              "large": f"at least {LARGE_MIN_ROWS} exported rows in total across fixed-size tables; "
@@ -45,6 +46,8 @@ Contract essentials:
 - variables: variable_id (stable snake_case), entity (grain), column (null = not materialised), data_type
   float|int|bool|category|text, categories, parents [{variable, alias, lag, aggregation}], mechanism {type, params},
   observability observed|latent, constraints {min,max,clip,round}, initial_state for lagged reads.
+  Explicit bounds are checked after simulation. For a count with minimum 1, a Poisson draw can produce 0.
+  Use clip=true if those values should be limited to the declared bounds.
   A parent on a coarser grain is looked up through FKs; omit aggregation or set it to null for that parent.
   A parent on a finer grain needs aggregation (sum|mean|count|...). For example, look up a product flag on
   each product-day row without aggregation; use mean to roll up product-day values to the product grain.
@@ -154,6 +157,12 @@ class SCMDraft(BaseModel):
                 if fact.event_id not in distractors and
                 (quote := " ".join(fact.source_quote.split())) and quote in original
             ]
+        for variable in self.scm.variables:
+            if unclipped_positive_poisson_count(variable):
+                variable.constraints.clip = True
+                self.auto_repairs.append(
+                    f"{variable.variable_id}: zapnuto omezení hodnot na zadané meze, protože Poissonovo rozdělení může vrátit nulu."
+                )
         rep = validate_spec(self.scm)
         collisions = {c.target for c in rep.errors if c.check_id == "variable.reserved_column"}
         if collisions:
@@ -352,7 +361,8 @@ def _mech_catalog() -> str:
     return "; ".join(f"{m.id} ({m.title})" for m in M.REGISTRY.values())
 
 
-async def plan_story(inp: ScenarioInput) -> PlannerResponse:
+async def plan_story(inp: ScenarioInput, *, current: SCMSpec | None = None, feedback: str = "",
+                     answers: dict[str, str] | None = None) -> PlannerResponse:
     example = load_reference_scenario("education_tutoring").model_dump(mode="json", exclude_defaults=True)
     legacy_hint = schema_hints(inp.custom_model)
     hints = [legacy_hint] if legacy_hint else []
@@ -367,6 +377,12 @@ async def plan_story(inp: ScenarioInput) -> PlannerResponse:
               + json.dumps(example, ensure_ascii=False)[:14000]
               + "\n\nReturn SCMDraft: scm (complete SCMSpec as an object), questions (only if essential), assumptions, "
                 "suggested_confounders, alternative_interpretations.")
+    if current is not None:
+        prompt += ("\n\n## Revise the current SCM\nReturn a complete revised SCM. Apply the requested changes to "
+                   "its entities, time, mechanisms or events. Preserve unrelated user edits. "
+                   "Describe the concrete changes in notes.\n"
+                   + json.dumps({"feedback": feedback, "answers": answers or {},
+                                 "current_scm": current.model_dump(mode="json")}, ensure_ascii=False))
     client = get_llm()
     schema = LargeSCMDraft if inp.volume == "large" else SCMDraft
     if not getattr(client, "mock", False):
@@ -375,12 +391,19 @@ async def plan_story(inp: ScenarioInput) -> PlannerResponse:
         draft: SCMDraft = await client.structured(
             role="strong", task="plan_scm", prompt=prompt, schema=schema,
             system=SYSTEM.replace("{MECHS}", _mech_catalog()),
-            mock_context={"input": inp.model_dump()}, json_mode=True, max_validation_retries=4)
+            mock_context={"input": inp.model_dump()}, json_mode=True, max_validation_retries=4,
+            use_cache=current is None)
     except LLMError as e:
         raise RuntimeError(explain_failure(str(e))) from e
     scm = draft.to_spec()
+    if current is not None:
+        pairs = {(parent.variable, variable.variable_id) for variable in scm.variables for parent in variable.parents}
+        scm = scm.model_copy(update={
+            "difficulty": current.difficulty,
+            "edges": [edge for edge in current.edges if (edge.source, edge.target) in pairs],
+        })
     scm = scm.model_copy(update={"meta": scm.meta.model_copy(update={
-        "seed": inp.seed, "original_story": inp.story,
+        "seed": current.meta.seed if current is not None else inp.seed, "original_story": inp.story,
         "warnings": [*scm.meta.warnings, *(f"automatická oprava: {r}" for r in draft.auto_repairs)],
         "assumptions": list(dict.fromkeys([*scm.meta.assumptions, *draft.assumptions]))})})
     if draft.alternative_interpretations:

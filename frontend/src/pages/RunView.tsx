@@ -1,16 +1,16 @@
 import { useEffect, useState } from 'react'
-import { Link, useParams, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, download, type DownloadWhat, type Json } from '../api'
 import ReportTab from '../components/ReportTab'
 import FilesFromData from '../components/FilesFromData'
 import DataBrowser from '../components/DataBrowser'
-import { DashboardTab, DetectiveTab, GroundTruthTab, LogTab, SqlTab, WhatIfTab } from '../components/Tabs'
+import { DashboardTab, DetectiveTab, GroundTruthTab, LogTab, SqlTab } from '../components/Tabs'
 import { VerdictChip } from './Home'
 import JobProgress from '../components/JobProgress'
 
 const TABS: [string, string][] = [
   ['report', 'Report & důkaz'], ['data', 'Data browser'], ['dashboard', 'Dashboard'], ['sql', 'SQL'],
-  ['whatif', 'What-if'], ['files', 'Soubory z dat'], ['detective', 'Detektiv'], ['truth', 'Ground truth'], ['log', 'Log & tokeny'],
+  ['files', 'Soubory z dat'], ['detective', 'Detektiv'], ['truth', 'Ground truth'], ['log', 'Log & tokeny'],
 ]
 
 const SHARED_TABS = new Set(['report', 'data', 'dashboard', 'sql', 'truth'])
@@ -18,13 +18,18 @@ const SHARED_TABS = new Set(['report', 'data', 'dashboard', 'sql', 'truth'])
 export default function RunView({ runId, shared = false }: { runId?: string; shared?: boolean } = {}) {
   const params0 = useParams()
   const rid = runId ?? params0.rid
+  const nav = useNavigate()
   const [params, setParams] = useSearchParams()
-  const tab = params.get('tab') ?? 'report'
+  const tabs = shared ? TABS.filter(([id]) => SHARED_TABS.has(id)) : TABS
+  const requestedTab = params.get('tab')
+  const tab = tabs.some(([id]) => id === requestedTab) ? requestedTab : 'report'
   const [run, setRun] = useState<Json>(null)
   const [report, setReport] = useState<Json>(null)
   const [schema, setSchema] = useState<Json>(null)
   const [sql, setSql] = useState('')
   const [err, setErr] = useState<string | null>(null)
+  const [reviewError, setReviewError] = useState('')
+  const [openingReview, setOpeningReview] = useState(false)
 
   const [reload, setReload] = useState(0)
   useEffect(() => {
@@ -42,27 +47,43 @@ export default function RunView({ runId, shared = false }: { runId?: string; sha
   }
   const go = (t: string) => setParams({ tab: t })
   const observation = run.observation
-  const tabs = shared ? TABS.filter(([id]) => SHARED_TABS.has(id)) : TABS
-  const dl = (what: DownloadWhat, extra = {}) => download(run.run_id, what, extra).catch((e) => setErr(String(e)))
+  const openReview = async () => {
+    setOpeningReview(true)
+    setReviewError('')
+    try {
+      const { session_id } = await api.reviewRun(run.run_id)
+      nav(`/plan/${session_id}`, { state: { runSearch: params.toString() } })
+    } catch (error) {
+      setReviewError(String(error))
+    } finally {
+      setOpeningReview(false)
+    }
+  }
+  const dl = (what: DownloadWhat | 'scm', extra = {}) => download(run.run_id, what, extra).catch((e) => setErr(String(e)))
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex-1 min-w-0">
-          <div className="text-xs text-slate-500 mono">{run.run_id}{!shared && run.parent_run_id && <> · what-if z <Link className="text-blue-700" to={`/runs/${run.parent_run_id}`}>{run.parent_run_id}</Link></>}
+          <div className="text-xs text-slate-500 mono">{run.run_id}{!shared && run.parent_run_id && <> · navazuje na <Link className="text-blue-700" to={`/runs/${run.parent_run_id}`}>{run.parent_run_id}</Link></>}
             {shared && <span className="font-sans"> · sdílený náhled jen pro čtení</span>}
-            {!shared && run.is_preset && <span className="font-sans"> · ukázkový běh (jen pro čtení, what-if si můžete vytvořit)</span>}</div>
+            {!shared && run.is_preset && <span className="font-sans"> · ukázkový běh</span>}</div>
           <h1 className="text-[28px] leading-tight font-semibold tracking-[-0.015em] truncate">{run.name} <span className="text-slate-500 font-normal text-base">– {run.label}</span></h1>
         </div>
         <VerdictChip v={run.verdict?.verdict} />
         {run.engine === 'scm' && <span className="chip bg-indigo-50 text-indigo-800 border border-indigo-200"
           title={`hash čistého světa ${run.causal?.world_hash ?? ''}`}>SCM engine · validace {run.causal?.status}</span>}
         {run.mock && <span className="chip bg-amber-50 text-amber-800 border border-amber-200">mock LLM</span>}
-        {!shared && run.parent_run_id && <Link className="btn" to={`/compare?a=${run.parent_run_id}&b=${run.run_id}`}>Porovnat s rodičem</Link>}
+        {!shared && run.parent_run_id && <Link className="btn" to={`/compare?${new URLSearchParams({
+          a: run.parent_run_id, b: run.run_id, ...(tab ? { tab } : {}),
+        })}`}>Porovnat s rodičem</Link>}
+        {!shared && run.spec && <button className="btn" onClick={() => void openReview()} disabled={openingReview}>Zpět k návrhu</button>}
+        {!shared && run.spec?.scm && <button className="btn" onClick={() => void dl('scm')}>Stáhnout SCM (JSON)</button>}
         {!shared && <button className="btn" onClick={() => void dl('zip')}>⬇ CSV (ZIP)</button>}
         {!shared && <button className="btn" onClick={() => void dl('db')}>⬇ SQLite</button>}
         {!shared && run.own && <ShareButton runId={run.run_id} initial={run.share_token ?? null} />}
       </div>
+      {reviewError && <div role="alert" className="text-sm text-red-700">{reviewError}</div>}
       {observation && <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-600">
         {observation.status === 'invalid_world' ? <span>Pozorovaná data nelze připravit, protože čistá data neprošla validací.</span>
           : observation.mode === 'manual' ? <span>Pozorovaná data s ručně zadanými chybami.</span>
@@ -82,10 +103,9 @@ export default function RunView({ runId, shared = false }: { runId?: string; sha
         {tabs.map(([id, label]) => <button key={id} className={`tab ${tab === id ? 'tab-active' : ''}`} onClick={() => go(id)}>{label}</button>)}
       </div>
       {tab === 'report' && (report ? <ReportTab report={report} onSql={(s) => { setSql(s); go('sql') }} /> : <div className="text-slate-500">Načítám report…</div>)}
-      {tab === 'data' && schema && <DataBrowser runId={run.run_id} schema={schema} onFiles={(t) => setParams({ tab: 'files', table: t })} />}
+      {tab === 'data' && schema && <DataBrowser runId={run.run_id} schema={schema} onFiles={shared ? undefined : (t) => setParams({ tab: 'files', table: t })} />}
       {tab === 'dashboard' && <DashboardTab key={run.run_id} runId={run.run_id} canRefresh={!shared && run.own && run.engine === 'scm' && run.status === 'done'} />}
       {tab === 'sql' && <SqlTab runId={run.run_id} initial={sql} />}
-      {tab === 'whatif' && <WhatIfTab run={run} />}
       {tab === 'files' && <FilesFromData runId={run.run_id} initialTable={params.get('table') ?? undefined} />}
       {tab === 'detective' && <DetectiveTab runId={run.run_id} />}
       {tab === 'truth' && <GroundTruthTab key={run.run_id} runId={run.run_id} />}

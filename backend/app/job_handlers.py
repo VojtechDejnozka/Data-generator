@@ -90,12 +90,11 @@ async def replan_scm(session: dict, req: ReplanRequest, prev: PlannerResponse) -
     scm = req.spec.scm or prev.spec.scm
     if req.feedback.strip() or req.answers:
         inp = ScenarioInput.model_validate(session["input"])
-        extra = "\n\nZpětná vazba uživatele: " + req.feedback + (
-            "\nOdpovědi: " + json.dumps(req.answers, ensure_ascii=False) if req.answers else "")
-        inp = inp.model_copy(update={"story": (inp.story + extra)[:8000], "engine": "scm",
-                                     "custom_model": (inp.custom_model + "\n\nCurrent SCM JSON (keep user edits):\n"
-                                                      + scm.model_dump_json())[:8000]})
-        return await plan_story(inp)
+        revised = await plan_story(inp, current=scm, feedback=req.feedback, answers=req.answers)
+        fields = {"entities", "time", "variables", "events", "ground_truth", "invariants"}
+        if scm.model_dump(include=fields) == revised.spec.scm.model_dump(include=fields):
+            raise UserFacingError("Přeplánování model nezměnilo. Zkuste konkrétnější úpravu.")
+        return revised
     rep = validate_scm(scm)
     return PlannerResponse(spec=scenario_spec(scm, req.spec), questions=[], suggestions=[],
                            notes=f"Uživatelské úpravy SCM ověřeny: {rep.status} "

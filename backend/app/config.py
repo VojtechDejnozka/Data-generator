@@ -158,10 +158,12 @@ def _resolve_provider(openai_key: str, gemini_key: str) -> str:
 
 def _model_env(provider: str, name: str) -> str:
     """<PROVIDER>_<NAME> (e.g. GEMINI_STRONG_MODEL) > generic <NAME> (STRONG_MODEL) > provider default."""
-    for var in (f"{provider.upper()}_{name}", name):
-        v = os.getenv(var)
-        if v is not None and v.strip():
-            return v.strip()
+    provider_value = os.getenv(f"{provider.upper()}_{name}")
+    if provider_value is not None and (provider_value.strip() or name.endswith("_FALLBACK_MODELS")):
+        return provider_value.strip()
+    generic_value = os.getenv(name, "").strip()
+    if generic_value:
+        return generic_value
     return DEFAULT_MODELS.get(provider, DEFAULT_MODELS["openai"])[name]
 
 

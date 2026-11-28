@@ -15,23 +15,30 @@ const RUN_PHASES: [string, string][] = [
   ['done', 'Hotovo'],
 ]
 
-export default function JobProgress({ jobId, onDone, phases = RUN_PHASES, title = 'Probíhá zpracování' }: {
+export default function JobProgress({ jobId, onDone, onError, phases = RUN_PHASES, title = 'Probíhá zpracování' }: {
   jobId: string
   onDone: (result: Json) => void
+  onError?: (message: string) => void
   phases?: [string, string][]
   title?: string
 }) {
   const [events, setEvents] = useState<JobEvent[]>([])
   const [error, setError] = useState<string | null>(null)
   const done = useRef(onDone)
+  const failed = useRef(onError)
   done.current = onDone
+  failed.current = onError
 
   useEffect(() => {
     setEvents([])
     setError(null)
     return watchJob(jobId, (e) => {
       if (e.final) {
-        if (e.status === 'error') setError(e.error ?? 'Neznámá chyba')
+        if (e.status === 'error') {
+          const message = e.error ?? 'Neznámá chyba'
+          setError(message)
+          failed.current?.(message)
+        }
         else done.current(e.result)
         return
       }

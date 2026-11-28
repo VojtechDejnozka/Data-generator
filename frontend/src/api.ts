@@ -232,8 +232,12 @@ export async function downloadUrl(runId: string, what: DownloadWhat, extra: { ob
 }
 
 /** Trigger a browser download without putting any credential into the page. */
-export async function download(runId: string, what: DownloadWhat, extra: { obs_id?: string; file?: string } = {}) {
-  const { url, filename } = await downloadUrl(runId, what, extra)
+export async function download(runId: string, what: DownloadWhat | 'scm', extra: { obs_id?: string; file?: string } = {}) {
+  const { url, filename } = what === 'scm' ? {
+    url: URL.createObjectURL(new Blob([JSON.stringify(await req<Json>('GET', `/api/runs/${runId}/scm.json`), null, 2)],
+      { type: 'application/json' })),
+    filename: `scm-${runId}.json`,
+  } : await downloadUrl(runId, what, extra)
   const a = document.createElement('a')
   a.href = url
   a.download = filename
@@ -241,6 +245,7 @@ export async function download(runId: string, what: DownloadWhat, extra: { obs_i
   document.body.appendChild(a)
   a.click()
   a.remove()
+  if (what === 'scm') window.setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
 export const api = {
@@ -265,6 +270,7 @@ export const api = {
   replan: (sid: string, body: Json) => req<{ job_id: string }>('POST', `/api/plan/${sid}/replan`, body),
   validateSpec: (spec: Spec) => req<{ errors: string[] }>('POST', '/api/spec/validate', spec),
   startRun: (body: Json) => req<{ job_id: string }>('POST', '/api/runs', body),
+  reviewRun: (id: string) => req<{ session_id: string }>('POST', `/api/runs/${id}/review`),
   runs: () => req<Json[]>('GET', '/api/runs'),
   run: (id: string) => req<Json>('GET', `/api/runs/${id}`),
   llmCalls: (id: string) => req<Json[]>('GET', `/api/runs/${id}/llm-calls`),
@@ -279,8 +285,6 @@ export const api = {
     return req<Json>('GET', `/api/runs/${id}/tables/${t}?${q}`)
   },
   query: (id: string, sql: string, limit = 500) => req<QueryResult>('POST', `/api/runs/${id}/query`, { sql, limit }),
-  whatif: (id: string, knob_overrides: Record<string, string>, label = '') =>
-    req<{ job_id: string }>('POST', `/api/runs/${id}/whatif`, { knob_overrides, label }),
   compare: (a: string, b: string) => req<Json>('GET', `/api/compare?a=${a}&b=${b}`),
   commentary: (id: string) => req<{ headline: string; paragraphs: string[] }>('POST', `/api/runs/${id}/commentary`),
   startDetective: (id: string) => req<{ job_id: string }>('POST', `/api/runs/${id}/detective`),
