@@ -5,6 +5,8 @@ import tailwindcss from '@tailwindcss/vite'
 // Backend runs on :8000 (API_PROXY_TARGET overrides); the Gemini key and the Supabase secret never reach the browser.
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  // one .env at the repo root; only VITE_* variables are exposed to the browser
+  envDir: '..',
   server: {
     port: 5173,
     proxy: { '/api': { target: process.env.API_PROXY_TARGET ?? 'http://127.0.0.1:8000', changeOrigin: true } },

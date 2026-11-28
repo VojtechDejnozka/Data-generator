@@ -48,6 +48,8 @@ from .storage.text_files import read_saved_text
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("api")
+# httpx logs full request URLs at INFO (PostgREST filters incl. share tokens) – keep them out of the logs
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 _settings = get_settings()
 assert_safe_config(_settings)
@@ -567,8 +569,10 @@ def download_ticket(ticket: str):
     if not item or item[0] < time.time() or not item[1].exists():
         raise HTTPException(404, "Odkaz ke stažení vypršel.")
     _, path, filename, media_type, inline = item
+    # generated documents are untrusted content: never let them run scripts on the app's origin
     return FileResponse(path, media_type=media_type, filename=None if inline else filename,
-                        content_disposition_type="inline" if inline else "attachment")
+                        content_disposition_type="inline" if inline else "attachment",
+                        headers={"Content-Security-Policy": "sandbox", "X-Content-Type-Options": "nosniff"})
 
 
 def _export_zip_file(run_id: str, run: dict, what: str) -> Path:

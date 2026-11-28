@@ -20,6 +20,10 @@ make seed-mock             # předgeneruje 3 demo běhy (příběh, baseline, si
 make seed                  # totéž s reálným Gemini
 ```
 
+Bez Supabase (`SUPABASE_URL` prázdné) běží aplikace v **lokálním režimu bez přihlášení** (`AUTH_DISABLED=1`,
+nastaví `scripts/dev.sh` sám): běhy jsou soubory v `runs/` a patří lokálnímu vývojáři. Přihlášení, uživatelské
+účty, kvóty a nasazení na Vercel popisuje kapitola [Účty a nasazení](#účty-přihlášení-a-nasazení-supabase--vercel).
+
 Požadavky: Python ≥ 3.11 (vyvíjeno na 3.13), Node ≥ 20. Pokud `npm install` hlásí chybu oprávnění
 k `~/.npm`, použijte `npm install --cache /tmp/npm-cache`.
 
@@ -32,11 +36,119 @@ k `~/.npm`, použijte `npm install --cache /tmp/npm-cache`.
 | `CHEAP_MODEL` / `CHEAP_FALLBACK_MODELS` | master data, texty, `llm_rows` (výchozí `gemini-3.5-flash-lite`) |
 | `LLM_MOCK=1` | fixture odpovědi (vývoj, testy, demo bez klíče / při vyčerpaném limitu) |
 | `LLM_MAX_CONCURRENCY`, `LLM_CACHE`, `LLM_TIMEOUT_S` | souběžnost, cache odpovědí, timeout |
+| `SUPABASE_*`, `VITE_SUPABASE_*`, `SIGNUP_*`, `QUOTA_*`, … | účty a nasazení – viz [tabulka proměnných](#proměnné-prostředí) |
 
 Názvy modelů byly ověřeny 2026-11-27 přes `models.list()` a dokumentaci aistudio.google.com.
 **Free tier má u modelů Gemini 4 kvótu 0** a modely Flash často vracejí 503 (přetížení). Klient proto
 modely zkouší v pořadí fallbacku: 429 s `limit: 0` znamená okamžitý přechod na další model, 429/5xx
 exponenciální backoff. Skutečně použitý model je u každého volání vidět v záložce *Log & tokeny*.
+
+
+## Účty, přihlášení a nasazení (Supabase + Vercel)
+
+Návrh a rozhodnutí: [`docs/AUTH_PLAN.md`](docs/AUTH_PLAN.md). Shrnutí:
+
+- **Supabase Auth** – e-mail + heslo, reset hesla, odhlášení; volitelně magic link a Google OAuth
+  (`VITE_AUTH_MAGIC_LINK=1`, `VITE_AUTH_GOOGLE=1` + zapnutý provider). Frontend používá jen publishable klíč.
+- **Backend** ověřuje `Authorization: Bearer <access_token>` u každého `/api/*` požadavku (podpis přes JWKS
+  projektu, ES256/RS256, `exp`/`aud`/`iss`). Veřejné jsou jen `/api/health`, sdílené odkazy `/api/share/…`
+  a jednorázové stahovací tickety. `user_id` se bere výhradně z tokenu.
+- **Vlastnictví** – každý běh, job, plánovací sezení a záznam spotřeby patří uživateli. Cizí běh vrací 404
+  (API i Storage); ukázkové běhy (`is_preset`) čte každý přihlášený, měnit je nikdo kromě vlastníka/admina.
+  Sdílení běhu read-only odkazem `/s/<token>` (tlačítko *Sdílet* v detailu běhu, lze zrušit).
+- **Data** – metadata v Postgresu s RLS na všech tabulkách (`supabase/migrations/`), soubory běhů
+  v soukromém Storage bucketu `runs` (`{user_id}/{run_id}/…`, SQLite gzip). Backend drží pracovní kopii
+  v `/tmp` (LRU cache) a po každém kroku ji synchronizuje.
+- **Ochrana nákladů** – denní kvóty běhů a tokenů na uživatele, rate limit úloh za minutu, evidence v tabulce
+  `usage`, zbývající kvóta v hlavičce UI; registrace `open | email_allowlist | invite_only` (výchozí allowlist).
+- **Dlouhé úlohy** – pipeline je rozdělená na krátké obnovitelné kroky (`plan → generate → evaluate → repair →
+  finalize`); každý krok je jeden request `POST /api/jobs/{id}/advance` (průběh se streamuje přes fetch-SSE
+  s hlavičkou Authorization). Přerušený krok se po vypršení zámku spustí znovu.
+
+### 1. Supabase projekt
+1. Vytvořte projekt na supabase.com. V *Project Settings → API Keys* zkopírujte **Project URL**,
+   **publishable key** (`sb_publishable_…`) a **secret key** (`sb_secret_…`; legacy `anon` / `service_role`
+   fungují také).
+2. Migrace (tabulky, RLS, trigger profilů, bucket `runs` a jeho policies):
+   ```bash
+   supabase login
+   supabase link --project-ref <ref>
+   supabase db push                    # aplikuje supabase/migrations/*.sql
+   ```
+   `supabase/seed.sql` je **jen pro lokální stack** (veřejná hesla demo účtů) – na hostovaný projekt ho nespouštějte.
+3. *Authentication → Sign In / Providers*: Email zapnutý, **Confirm email zapnuté**. Volitelně Google
+   (client ID/secret z Google Cloud) a magic link. Pro `SIGNUP_MODE=invite_only` vypněte *Allow new users to sign up*.
+4. *Authentication → URL Configuration*:
+   - **Site URL**: produkční doména, např. `https://story2data.vercel.app`
+   - **Redirect URLs**: `https://story2data.vercel.app/**`, `https://*-<vercel-team-slug>.vercel.app/**`
+     (preview deploymenty), `http://localhost:5173/**`
+   - Frontend posílá `redirectTo` (`/prihlaseni`, `/auth/nastaveni-hesla`); pokud upravujete e-mailové šablony,
+     používejte `{{ .RedirectTo }}` / `{{ .ConfirmationURL }}`, ne pevné `{{ .SiteURL }}`.
+5. Admin účet: zaregistrujte se a v SQL editoru spusťte
+   `update public.profiles set role = 'admin', approved = true where email = 'vy@example.com';`
+6. Demo preset a existující lokální běhy:
+   ```bash
+   cd backend
+   .venv/bin/python ../scripts/seed_demo.py --mock --owner-email vy@example.com --preset   # sdílený demo běh
+   .venv/bin/python ../scripts/migrate_local_runs.py --owner-email vy@example.com --dry-run  # pak bez --dry-run
+   ```
+
+### 2. Lokální vývoj se Supabase
+```bash
+make supabase-start      # Supabase CLI + Docker; vypíše API URL a klíče
+make supabase-reset      # migrace + seed: demo@story2data.local / demo-heslo-123, admin@story2data.local / admin-heslo-123
+# .env: SUPABASE_URL=http://127.0.0.1:54321, SUPABASE_PUBLISHABLE_KEY, SUPABASE_SECRET_KEY,
+#       VITE_SUPABASE_URL, VITE_SUPABASE_PUBLISHABLE_KEY, AUTH_DISABLED=0
+make dev                 # nebo make mock (LLM_MOCK=1 funguje nezávisle na přihlášení)
+```
+
+### 3. Vercel
+- Projekt importujte z repozitáře; `vercel.json` definuje dvě **Services** (beta): `frontend` (Vite, `frontend/`)
+  a `backend` (FastAPI, `backend/`, entrypoint `app.main:app`, `maxDuration` 300 s). `/api/*` jde na backend,
+  ostatní na SPA (fallback na `index.html`).
+- *Settings → Environment Variables* – nastavte pro **Production**, **Preview** i **Development**
+  (`vercel env pull` stáhne Development do `.env.local`). Secret klíče označte jako *Sensitive*.
+- Preview deploymenty: přidejte jejich doménu do Supabase Redirect URLs (viz výše) a do `CORS_ORIGIN_REGEX`
+  jen pokud API voláte z jiného originu (při Services je vše na jedné doméně, CORS se neuplatní).
+- Hobby plán: max. 300 s na request – každý krok pipeline musí doběhnout do 5 min (typicky 5–110 s).
+  Velmi pomalé generování přes reálné Gemini může krok `generate` prodloužit (viděno až 494 s celý běh):
+  na Pro plánu zvyšte `maxDuration` na 800, nebo nasaďte backend mimo Vercel (`backend/Dockerfile`,
+  frontend s `VITE_API_BASE_URL`).
+- Konfigurace Services (pole `functions` uvnitř služby, SPA rewrite) vychází z dokumentace z 2026-11-28 a **nebyla
+  ověřena reálným deployem** – při prvním nasazení zkontrolujte build log a `GET /api/health`.
+
+### Proměnné prostředí
+
+| proměnná | kde | význam |
+|---|---|---|
+| `GEMINI_API_KEY` | backend (secret) | klíč Gemini |
+| `SUPABASE_URL` | backend | URL projektu; prázdné = lokální režim bez účtů |
+| `SUPABASE_PUBLISHABLE_KEY` | backend | publishable/anon klíč (dotazy jménem uživatele, platí RLS) |
+| `SUPABASE_SECRET_KEY` | backend (secret) | secret/service_role klíč – jen zápisy po kontrole vlastnictví, Storage, Admin API |
+| `SUPABASE_STORAGE_BUCKET` | backend | bucket s daty běhů (výchozí `runs`) |
+| `SUPABASE_JWKS_URL`, `SUPABASE_JWT_ISSUER`, `SUPABASE_JWT_AUDIENCE` | backend | volitelné přepsání (odvozeno z `SUPABASE_URL`) |
+| `SUPABASE_JWT_SECRET` | backend (secret) | jen legacy HS256 lokálně, v produkci ignorováno |
+| `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY` | frontend (veřejné) | Supabase klient v prohlížeči |
+| `VITE_AUTH_GOOGLE`, `VITE_AUTH_MAGIC_LINK` | frontend | zobrazit volitelné způsoby přihlášení |
+| `VITE_API_BASE_URL` | frontend | jen při backendu na jiném originu |
+| `SIGNUP_MODE`, `SIGNUP_ALLOWLIST` | backend | `open` / `email_allowlist` (e-maily, `@domény`) / `invite_only` |
+| `QUOTA_RUNS_PER_DAY`, `QUOTA_TOKENS_PER_DAY`, `QUOTA_COUNT_MOCK` | backend | denní limity na uživatele (UTC), mock tokeny se standardně nepočítají |
+| `RATE_LIMIT_JOBS_PER_MINUTE` | backend | max. spuštěných úloh za minutu na uživatele |
+| `CORS_ORIGINS`, `CORS_ORIGIN_REGEX` | backend | povolené originy (localhost, produkce, preview) |
+| `MAX_REQUEST_BYTES` | backend | limit velikosti požadavku (výchozí 2 MB) |
+| `WORKSPACE_DIR`, `WORKSPACE_CACHE_MB` | backend | pracovní kopie běhů (na Vercelu `/tmp`) |
+| `JOB_AUTODRIVE` | backend | 1 = kroky úloh běží na pozadí (lokálně), 0 = řídí je klient (Vercel) |
+| `AUTH_DISABLED` | backend | **jen lokálně**; aplikace odmítne start, je-li nastaven `VERCEL_ENV` nebo `APP_ENV=production` |
+
+Všechny proměnné bez prefixu `VITE_` zůstávají na serveru; do `VITE_*` nikdy nedávejte tajemství.
+
+### Ověření end-to-end
+Automaticky (mock LLM, bez Supabase): `tests/test_e2e_auth.py` projde registraci (token z allowlistu) →
+plán → schválení specu → generování po krocích přes `/advance` → report → what-if → porovnání → sdílení →
+odhlášení; `tests/test_storage_jobs.py` totéž se smazáním `/tmp` a paměti mezi kroky (simulace serverless).
+Ručně proti `supabase start` + `make mock`: registrace na `/registrace` → přihlášení → *Nový scénář* →
+*Schválit a generovat* → report → what-if → *Odhlásit*; druhým účtem ověřte, že první běh není vidět
+(ani přes `/runs/<id>`), a že `GET /storage/v1/object/runs/<cizí user_id>/…` s tokenem druhého uživatele vrací chybu.
 
 ## Architektura
 
@@ -95,6 +207,9 @@ v promptu. Pokud plánovaný příběh odpovídá modulu, STRONG vrací jen komp
 
 ### Bezpečnost a robustnost
 - API klíč jen v `.env` na backendu (`.env` je v `.gitignore`), frontend volá jen `/api`.
+- Přihlášení přes Supabase, autorizace na backendu i v RLS (viz [Účty a nasazení](#účty-přihlášení-a-nasazení-supabase--vercel));
+  SQL z UI/detektivu se otevírá až po kontrole vlastnictví a jen nad databází daného běhu.
+- Chyby: uživatel vidí srozumitelnou zprávu, detail (traceback) jen v logu backendu s referenčním kódem.
 - SQL od AI/uživatele: textová kontrola (jediný SELECT/WITH), SQLite `mode=ro`, authorizer povolující
   jen čtení, časový limit (progress handler) a limit řádků.
 - STRONG validátor dostává **kompaktní profil** (statistiky, vzorky, výsledky kontrol a důkazních dotazů),
@@ -152,7 +267,7 @@ přenese sám (faktury problémového dodavatele mají např. pozdější dodán
 Každý dokument nese viditelné označení **„SYNTETICKÝ DOKUMENT“** (u PDF v patičce), aby nemohl být zaměněn
 za skutečný záznam. PDF používá písmo DejaVu Sans (licence v `backend/app/documents/fonts/LICENSE_DEJAVU`).
 
-## Výstupy běhu (`runs/<run_id>/`)
+## Výstupy běhu (`runs/<run_id>/`, se Supabase ve Storage `runs/{user_id}/{run_id}/`)
 `data.sqlite`, `run.json` (spec, plán, knoby, verdikt, kontroly, signály, spotřeba tokenů, repair
 historie), `evidence.json`, `checks.json`, `dashboard.json`, `manifest.json` (ground truth),
 `llm_calls.jsonl`, `detective.json`. Export z UI: CSV (ZIP) a SQLite.
@@ -184,12 +299,21 @@ Předem: `make seed` (nebo `make seed-mock`) a `make dev`. Otevřete http://127.
 efektových primitiv, simulátoru (determinismus, nezávislost poptávky, monotónnost knobů, baseline),
 kontrol a SQL guardu, `llm_rows`; integrační test celé pipeline (plán → replan → běh → what-if →
 porovnání → export → detektiv) a API test v mock režimu.
+Účty a bezpečnost: ověření JWT (platný, expirovaný, cizí podpis, špatné `aud`/`iss`, `alg=none`, rotace JWKS),
+401 na každé neveřejné routě, izolace dvou uživatelů (běhy, joby, sezení, SQL, stahování, sdílení, presety),
+kvóty a rate limit, režimy registrace, odmítnutí `AUTH_DISABLED` v produkci, synchronizace se Storage,
+obnovení kroků jobu na „nové instanci“, migrační skript. `make test-rls` spustí migrace na dočasném
+Postgresu (s náhradou schémat `auth`/`storage`) a ověří RLS a Storage policies (potřebuje `PG_BIN` nebo `initdb`).
 
 ## Známá omezení
 - Jeden plně implementovaný simulátor (maloobchod / dodavatel). Jiné příběhy jdou cestou `llm_rows`,
   která je slabší (konzistence zajišťují validace a repair).
 - Distraktory přidané v review jsou v simulačním archetypu jen dokumentační, pokud je modul nesimuluje;
   tabulky/sloupce přidané do `llm_rows` tabulek se generují.
-- Úlohy běží in-process (restart serveru ukončí běžící úlohy; hotové běhy zůstávají na disku).
+- Úlohy jsou perzistentní a rozdělené na kroky; při `JOB_AUTODRIVE=0` (Vercel) běží jen dokud je stránka
+  otevřená – po návratu na stránku běhu se pokračuje od posledního dokončeného kroku.
+- Zablokovaný uživatel nemůže volat API okamžitě, ale už vydaný access token platí do `exp` (výchozí 1 h)
+  pro přímé čtení vlastních řádků přes Data API.
+- Supabase Free: soubor max. 50 MB (klasický běh ≈ 20 MB po gzip), 1 GB Storage celkem.
 - Mock detektiv i mock validátor jsou deterministické: detektiv pouští pevnou sadu SQL dotazů, ale
   závěr odvozuje z jejich skutečných výsledků; validátor vychází z kontrol a měřených signálů.

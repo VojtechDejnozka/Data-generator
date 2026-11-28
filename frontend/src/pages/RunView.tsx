@@ -6,6 +6,7 @@ import FilesFromData from '../components/FilesFromData'
 import DataBrowser from '../components/DataBrowser'
 import { DashboardTab, DetectiveTab, GroundTruthTab, LogTab, SqlTab, WhatIfTab } from '../components/Tabs'
 import { VerdictChip } from './Home'
+import JobProgress from '../components/JobProgress'
 
 const TABS: [string, string][] = [
   ['report', 'Report & důkaz'], ['data', 'Data browser'], ['dashboard', 'Dashboard'], ['sql', 'SQL'],
@@ -25,15 +26,20 @@ export default function RunView({ runId, shared = false }: { runId?: string; sha
   const [sql, setSql] = useState('')
   const [err, setErr] = useState<string | null>(null)
 
+  const [reload, setReload] = useState(0)
   useEffect(() => {
     setRun(null); setReport(null); setSchema(null)
     api.run(rid!).then(setRun).catch((e) => setErr(String(e)))
     api.report(rid!).then(setReport).catch(() => undefined)
     api.schema(rid!).then(setSchema).catch(() => undefined)
-  }, [rid])
+  }, [rid, reload])
 
   if (err) return <div className="text-red-700">{err}</div>
   if (!run) return <div className="text-slate-500">Načítám běh…</div>
+  if (run.status === 'running' && run.job_id && run.own && !shared) {
+    // the job is resumable: watching it drives the remaining stages (also after closing the tab)
+    return <JobProgress jobId={run.job_id} title={`Běh ${run.run_id} pokračuje`} onDone={() => setReload((n) => n + 1)} />
+  }
   const go = (t: string) => setParams({ tab: t })
   const observation = run.observation
   const tabs = shared ? TABS.filter(([id]) => SHARED_TABS.has(id)) : TABS
