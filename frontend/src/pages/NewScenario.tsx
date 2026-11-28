@@ -107,42 +107,47 @@ export default function NewScenario() {
         </div>
         <p className="text-xs text-slate-600 mt-2">{importing ? 'Model se ověří a otevře přímo k úpravám, včetně původního seedu.' : 'SQL a ontologie slouží jako doporučená struktura pro nový model.'}</p>
       </fieldset>}
-      {!importing && <fieldset className="border-t border-slate-200 pt-3">
-        <legend className="font-semibold text-sm pr-2">Velikost a složitost datasetu</legend>
-        <label className="block max-w-xs mb-2"><span className="label">Přibližný rozsah</span>
-          <select className="input" value={volume} onChange={(e) => setVolume(e.target.value)}>
-            <option value="small">Malý</option><option value="medium">Střední</option><option value="large">{scm ? 'Velký (alespoň 100 000 řádků celkem)' : 'Velký'}</option>
-          </select>
-        </label>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {TARGETS.filter(([key]) => scm || key === 'tables' || key === 'rows').map(([key, label]) => <label key={key}>
-            <span className="label">{label}</span>
-            <input className="input" type="number" min={1} step={1} placeholder="Volitelné" value={targets[key] ?? ''}
-              onChange={(e) => setTargets({ ...targets, [key]: e.target.value === '' ? undefined : Number(e.target.value) })} />
-          </label>)}
+      <details className="text-sm" onInvalidCapture={(e) => { e.currentTarget.open = true }}>
+        <summary className="cursor-pointer text-slate-700">Pokročilé nastavení</summary>
+        <div className="mt-4 space-y-5">
+          {!importing && <fieldset className="border-t border-slate-200 pt-3">
+            <legend className="font-semibold text-sm pr-2">Velikost a složitost datasetu</legend>
+            <label className="block max-w-xs mb-2"><span className="label">Přibližný rozsah</span>
+              <select className="input" value={volume} onChange={(e) => setVolume(e.target.value)}>
+                <option value="small">Malý</option><option value="medium">Střední</option><option value="large">{scm ? 'Velký (alespoň 100 000 řádků celkem)' : 'Velký'}</option>
+              </select>
+            </label>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {TARGETS.filter(([key]) => scm || key === 'tables' || key === 'rows').map(([key, label]) => <label key={key}>
+                <span className="label">{label}</span>
+                <input className="input" type="number" min={1} step={1} placeholder="Volitelné" value={targets[key] ?? ''}
+                  onChange={(e) => setTargets({ ...targets, [key]: e.target.value === '' ? undefined : Number(e.target.value) })} />
+              </label>)}
+            </div>
+            <p className="text-xs text-slate-600 mt-2">{scm ? 'Orientační cíle. Kauzální proměnné jsou uzly grafu. Celkový počet řádků zahrnuje i odvozené a časové tabulky.' : 'Orientační cíle podle možností scénáře.'}</p>
+          </fieldset>}
+          {scm && <fieldset className="border-t border-slate-200 pt-3 space-y-2">
+            <legend className="font-semibold text-sm pr-2">Obtížnost rekonstrukce příběhu</legend>
+            <div className="flex flex-wrap gap-4 text-sm">
+              <label><input type="radio" name="difficulty" checked={mode === 'automatic'} onChange={() => setMode('automatic')} /> Automaticky</label>
+              <label><input type="radio" name="difficulty" checked={mode === 'manual'} onChange={() => setMode('manual')} /> Ručně</label>
+            </div>
+            {mode === 'automatic' ? <label className="block max-w-md"><span className="label">Cílová obtížnost {target} / 100</span>
+              <input className="w-full accent-blue-600" type="range" min={0} max={100} value={target} onChange={(e) => setTarget(Number(e.target.value))} />
+              <span className="text-xs text-slate-600">Vyšší hodnota ztěžuje odhalení příběhu z dat. Aplikace vybere nejlepší nalezené nastavení.</span>
+            </label> : <>
+              <div className="grid md:grid-cols-2 gap-3 max-w-xl">
+                <label><span className="label">Chybějící hodnoty (NA, %)</span><input className="input" type="number" min={0} max={100} step="any" required value={missing} onChange={(e) => setMissing(e.target.value)} /></label>
+                <label><span className="label">Pozorovací šum (%)</span><input className="input" type="number" min={0} step="any" required value={noise} onChange={(e) => setNoise(e.target.value)} /></label>
+              </div>
+              <p className="text-xs text-slate-600">Například 10 % přidá k číslům náhodnou chybu se směrodatnou odchylkou 10 % původní odchylky sloupce. Týká se pouze pozorované kopie dat.</p>
+            </>}
+          </fieldset>}
+          {!importing && <label className="block max-w-40"><span className="label">Seed</span>
+            <input required className="input" type="number" step={1} value={seed} onChange={(e) => setSeed(Number(e.target.value))} />
+          </label>}
         </div>
-        <p className="text-xs text-slate-600 mt-2">{scm ? 'Orientační cíle. Kauzální proměnné jsou uzly grafu. Celkový počet řádků zahrnuje i odvozené a časové tabulky.' : 'Orientační cíle podle možností scénáře.'}</p>
-      </fieldset>}
-      {scm && <fieldset className="border-t border-slate-200 pt-3 space-y-2">
-        <legend className="font-semibold text-sm pr-2">Obtížnost rekonstrukce příběhu</legend>
-        <div className="flex flex-wrap gap-4 text-sm">
-          <label><input type="radio" name="difficulty" checked={mode === 'automatic'} onChange={() => setMode('automatic')} /> Automaticky</label>
-          <label><input type="radio" name="difficulty" checked={mode === 'manual'} onChange={() => setMode('manual')} /> Ručně</label>
-        </div>
-        {mode === 'automatic' ? <label className="block max-w-md"><span className="label">Cílová obtížnost {target} / 100</span>
-          <input className="w-full accent-blue-600" type="range" min={0} max={100} value={target} onChange={(e) => setTarget(Number(e.target.value))} />
-          <span className="text-xs text-slate-600">Vyšší hodnota ztěžuje odhalení příběhu z dat. Aplikace vybere nejlepší nalezené nastavení.</span>
-        </label> : <>
-          <div className="grid md:grid-cols-2 gap-3 max-w-xl">
-            <label><span className="label">Chybějící hodnoty (NA, %)</span><input className="input" type="number" min={0} max={100} step="any" required value={missing} onChange={(e) => setMissing(e.target.value)} /></label>
-            <label><span className="label">Pozorovací šum (%)</span><input className="input" type="number" min={0} step="any" required value={noise} onChange={(e) => setNoise(e.target.value)} /></label>
-          </div>
-          <p className="text-xs text-slate-600">Například 10 % přidá k číslům náhodnou chybu se směrodatnou odchylkou 10 % původní odchylky sloupce. Týká se pouze pozorované kopie dat.</p>
-        </>}
-      </fieldset>}
-      {!importing && <details className="text-sm"><summary className="cursor-pointer text-slate-700">Pokročilé nastavení</summary>
-        <label className="block max-w-40 mt-2"><span className="label">Seed</span><input required className="input" type="number" step={1} value={seed} onChange={(e) => setSeed(Number(e.target.value))} /></label>
-      </details>}
+      </details>
       {err && <p role="alert" className="text-sm text-red-700">{err}</p>}
       <button className="btn btn-primary" disabled={busy}>{busy ? 'Zpracovávám…' : importing ? 'Otevřít SCM' : scm ? 'Navrhnout SCM' : 'Navrhnout scénář'}</button>
     </form>
