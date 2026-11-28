@@ -73,7 +73,7 @@ def _spec_of(run: dict) -> ScenarioSpec:
 @app.get("/api/health")
 def health() -> dict:
     s = get_settings()
-    return {"ok": True, "mock": s.mock, "has_key": bool(s.gemini_api_key), "strong_model": s.strong_model,
+    return {"ok": True, "mock": s.mock, "has_key": bool(s.openai_api_key), "strong_model": s.strong_model,
             "strong_fallbacks": s.strong_fallbacks, "cheap_model": s.cheap_model, "cheap_fallbacks": s.cheap_fallbacks}
 
 
@@ -250,7 +250,16 @@ def run_report(run_id: str) -> dict:
 @app.get("/api/runs/{run_id}/dashboard")
 def run_dashboard(run_id: str) -> dict:
     run = _run_or_404(run_id)
-    return {"meta": run.get("dashboard", {}), "widgets": store.load_json(run_id, "dashboard.json", [])}
+    widgets = store.load_json(run_id, "dashboard.json", [])
+    meta = run.get("dashboard", {})
+    if not widgets and run.get("engine") == "scm" and store.db_path(run_id).is_file():
+        from .causal.service import run_scm, scenario_spec
+        from .reporting.evidence import validate_widgets
+        scm, _ = run_scm(run_id)
+        spec = scenario_spec(scm)
+        widgets, errors = validate_widgets(store.db_path(run_id), spec.dashboard, {}, spec.meta.model_dump())
+        meta = {**meta, "errors": errors}
+    return {"meta": meta, "widgets": widgets}
 
 
 @app.get("/api/runs/{run_id}/ground-truth")

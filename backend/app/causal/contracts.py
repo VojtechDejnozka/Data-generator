@@ -21,6 +21,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import math
 import re
 from typing import Any, Literal, Optional
 
@@ -246,11 +247,42 @@ class EventSpec(BaseModel):
     ramp_periods: int = Field(0, ge=0)
     kind: Literal["story", "distractor", "seasonality", "control"] = "story"
 
+    def check_parameters(self) -> None:
+        params = self.intervention_parameters
+        intervention = self.intervention_type
+        prefix = f"event {self.event_id}: {intervention}"
+        numeric = {"shift": ["delta"], "scale": ["factor"], "seasonal": ["amplitude"]}.get(intervention, [])
+        if intervention == "param_change":
+            if not isinstance(params.get("param"), str) or not params["param"].strip():
+                raise ValueError(f"{prefix} requires a parameter path in 'param'")
+            changes = params.keys() & {"value", "delta", "factor"}
+            if len(changes) != 1:
+                raise ValueError(f"{prefix} requires exactly one of 'value', 'delta', 'factor'")
+            numeric = list(changes - {"value"})
+        if intervention == "set_value" or (intervention == "param_change" and "value" in params):
+            if params.get("value") is None:
+                raise ValueError(f"{prefix} requires a non-null 'value'")
+        if intervention == "seasonal":
+            numeric.extend(key for key in ("period", "phase") if key in params)
+            if params.get("mode", "add") not in ("add", "multiply"):
+                raise ValueError(f"{prefix} mode must be 'add' or 'multiply'")
+        for key in numeric:
+            value = params.get(key)
+            try:
+                finite = type(value) in (int, float) and math.isfinite(value)
+            except OverflowError:
+                finite = False
+            if not finite:
+                raise ValueError(f"{prefix} requires a finite numeric '{key}' in intervention_parameters")
+        if intervention == "seasonal" and params.get("period", 7) <= 0:
+            raise ValueError(f"{prefix} requires a positive 'period'")
+
 
 # =========================================================================== ground truth
 class StoryFact(BaseModel):
     fact_id: str
     description: str
+    source_quote: str = Field("", description="Verbatim excerpt from the user's story supporting this exact claim")
     importance: float = Field(1.0, ge=0)
     kind: Literal["edge", "event", "root_cause", "affected_entities", "lag", "direction"] = "edge"
     source: Optional[str] = Field(None, description="variable_id")
@@ -322,6 +354,7 @@ class CorruptionConfig(BaseModel):
 
 # =========================================================================== detective / evaluation / difficulty
 class DetectiveConfig(BaseModel):
+    statistical_first_pass: bool = False
     kind: Literal["statistical", "llm"] = "statistical"
     model_role: Literal["strong", "cheap"] = "strong"
     max_steps: int = Field(14, ge=1, le=60)
@@ -433,7 +466,9 @@ class SCMSpec(BaseModel):
 
     def fingerprint(self) -> str:
         """Hash of everything that defines the clean reality (not difficulty / detective settings)."""
-        d = self.model_dump(mode="json", exclude={"difficulty"})
+        d = self.model_dump(mode="json", exclude={
+            "difficulty": True, "ground_truth": {"story_facts": {"__all__": {"source_quote"}}},
+        })
         return hashlib.sha256(json.dumps(d, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
 
     def to_yaml(self) -> str:

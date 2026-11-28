@@ -251,6 +251,8 @@ class Engine:
         self.seed = int(spec.meta.seed if seed is None else seed)
         self.noise_scale = dict(noise_scale or {})
         self.events = list(spec.events) + list(extra_events or [])
+        for event in self.events:
+            event.check_parameters()
         self.T = spec.time.periods if spec.time else 1
         self.dates = spec.time.dates() if spec.time else []
         self.grains: dict[str, Grain] = {}
@@ -593,7 +595,7 @@ class Engine:
                     elif "delta" in ip:
                         new = float(cur) + float(ip["delta"])
                     else:
-                        new = float(cur) * float(ip.get("factor", 1.0))
+                        new = float(cur) * float(ip["factor"])
                     eff = float(cur) + r * (float(new) - float(cur)) if isinstance(cur, (int, float)) and \
                         isinstance(new, (int, float)) else (new if r >= 0.5 else cur)
                     params = _set_path(params, path, eff)
@@ -619,7 +621,7 @@ class Engine:
             ip = ev.intervention_parameters
             values = np.asarray(values)
             if ev.intervention_type == "set_value":
-                target = ip.get("value")
+                target = ip["value"]
                 if v.data_type in ("float",) and isinstance(target, (int, float)):
                     new = (1 - r) * values.astype(float) + r * float(target)
                 else:
@@ -630,11 +632,11 @@ class Engine:
                                                                                   else float(target))
                     mask = mask & hit
             elif ev.intervention_type == "shift":
-                new = values.astype(float) + r * float(ip.get("delta", 0.0))
+                new = values.astype(float) + r * float(ip["delta"])
             elif ev.intervention_type == "scale":
-                new = values.astype(float) * (1 + r * (float(ip.get("factor", 1.0)) - 1))
+                new = values.astype(float) * (1 + r * (float(ip["factor"]) - 1))
             else:  # seasonal
-                amp, per = float(ip.get("amplitude", 0.0)), float(ip.get("period", 7.0))
+                amp, per = float(ip["amplitude"]), float(ip.get("period", 7.0))
                 ph = float(ip.get("phase", 0.0))
                 s = amp * math.sin(2 * math.pi * ((t or 0) + ph) / per)
                 new = values.astype(float) * (1 + s) if ip.get("mode", "add") == "multiply" else values.astype(float) + s

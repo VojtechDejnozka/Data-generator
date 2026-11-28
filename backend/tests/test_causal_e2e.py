@@ -105,8 +105,8 @@ def test_change_of_corruption_reuses_clean_world_and_keeps_its_hash():
     assert w2.world_hash == w1.world_hash
 
 
-@pytest.mark.skipif(not os.getenv("GEMINI_API_KEY") or os.getenv("RUN_REAL_LLM_TESTS") != "1",
-                    reason="real LLM integration test NOT executed (needs GEMINI_API_KEY and RUN_REAL_LLM_TESTS=1)")
+@pytest.mark.skipif(not os.getenv("OPENAI_API_KEY") or os.getenv("RUN_REAL_LLM_TESTS") != "1",
+                    reason="real LLM integration test requires OPENAI_API_KEY and RUN_REAL_LLM_TESTS=1")
 def test_real_llm_planner_and_detective(monkeypatch):  # pragma: no cover - needs network and a key
     import asyncio
     monkeypatch.setenv("LLM_MOCK", "0")

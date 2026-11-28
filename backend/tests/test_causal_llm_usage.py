@@ -24,10 +24,10 @@ FINAL = json.dumps({"thought": "done", "action": "final", "final": {
 
 
 def fake_client(tmp_path, n_runs: int = 1) -> LLMClient:
-    s = Settings(gemini_api_key="k", strong_model="gemini-3.5-flash-lite", strong_fallbacks=[], cheap_model="x",
+    s = Settings(openai_api_key="k", strong_model="gpt-6-luna", strong_fallbacks=[], cheap_model="x",
                  cheap_fallbacks=[], llm_mock=False, cache_dir=tmp_path)
     c = LLMClient(s)
-    c._client = FakeSDK({"gemini-3.5-flash-lite": [TOOL, FINAL] * n_runs})
+    c._client = FakeSDK({"gpt-6-luna": [TOOL, FINAL] * n_runs})
     return c
 
 
@@ -51,7 +51,7 @@ def test_llm_detective_calls_are_recorded_accounted_and_replayable(tmp_path, mon
     doc = json.loads((d / f"{eid}.json").read_text(encoding="utf-8"))
     calls = [json.loads(x) for x in (d / f"{eid}.llm_calls.jsonl").read_text(encoding="utf-8").splitlines()]
     assert [c["task"] for c in calls] == ["causal_detective", "causal_detective"]
-    assert calls[0]["model"] == "gemini-3.5-flash-lite" and calls[0]["response"]["tool"] == "execute_sql"
+    assert calls[0]["model"] == "gpt-6-luna" and calls[0]["response"]["tool"] == "execute_sql"
     assert doc["usage"]["tokens"] == 250 and doc["replay"]["llm_calls"] == 2
     # replay: no SDK call is made (the fake script is exhausted), tools re-run on the stored observation
     n_sdk = len(client._client.calls)
@@ -70,6 +70,30 @@ def test_statistical_evaluations_replay_and_cost_nothing(run_id):
     assert ev.usage["calls"] == 0 and ev.usage["tokens"] == 0
     rep = asyncio.run(service.replay_evaluation(run_id, ev.estimate.evaluation_ids[0]))
     assert rep["identical"] and rep["llm_calls_recorded"] == 0
+
+
+def test_interactive_detective_checks_evidence_before_accepting_a_conclusion(run_id, monkeypatch, tmp_path):
+    client = fake_client(tmp_path)
+    incomplete = json.loads(FINAL)
+    qualified = json.loads(FINAL)
+    qualified["final"]["limitations"] = ["The observational comparison cannot identify the effect."]
+    client._client = FakeSDK({"gpt-6-luna": [FINAL, TOOL, json.dumps(qualified)]})
+    monkeypatch.setattr(llm_agent, "get_llm", lambda: client)
+    world, _ = service.load_world(run_id)
+    selected = service.observe_and_store(run_id, world, CorruptionConfig(seed=1234))
+    stored = service.store.load_run(run_id)
+    stored["observation"] = {"observation_id": selected.observation_id}
+    service.store.save_json(run_id, "run.json", stored)
+    report = asyncio.run(service.legacy_detective_view(run_id))
+    assert report["observation_id"] == selected.observation_id
+    prompts = [prompt for _, prompt, _ in client._client.calls]
+    assert len(prompts) == 3
+    assert "Preliminary statistical leads" in prompts[0] and "evidence_ids" in prompts[0]
+    assert "Your draft claims relationships" in prompts[1]
+    assert report["final"]["root_cause"] == incomplete["final"]["story_summary"]
+    assert report["score"]["queries"] > 1
+    replay = asyncio.run(service.replay_evaluation(run_id, report["score"]["evaluation_id"]))
+    assert replay["identical"]
 
 
 def test_manual_mode_reports_total_usage(tmp_path, monkeypatch, run_id):

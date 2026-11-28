@@ -15,7 +15,7 @@ export function DashboardTab({ runId }: { runId: string }) {
     <div className="space-y-4">
       <div className="flex items-center gap-2 text-sm">
         <h2 className="text-lg font-bold flex-1">{d.meta.title ?? 'Dashboard'}</h2>
-        <span className="chip bg-slate-100">zdroj: {d.meta.source === 'spec' ? 'návrh STRONG modelu (validováno)' : 'výchozí z důkazních dotazů'}</span>
+        <span className="chip bg-slate-100">zdroj: {d.meta.source === 'scm' ? 'kauzální model' : d.meta.source === 'spec' ? 'návrh STRONG modelu (validováno)' : 'výchozí z důkazních dotazů'}</span>
       </div>
       {d.meta.errors?.length > 0 && <div className="text-xs text-amber-800">Vyřazené widgety: {d.meta.errors.join('; ')}</div>}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -120,11 +120,16 @@ export function DetectiveTab({ runId }: { runId: string }) {
   useEffect(() => { api.detective(runId).then(setResult).catch(() => undefined) }, [runId])
   const start = async () => {
     setErr(null); setLive([]); setRunning(true); setResult(null)
-    const { job_id } = await api.startDetective(runId)
-    watchJob(job_id, (e) => {
-      if (e.final) { setRunning(false); if (e.status === 'error') setErr(e.error ?? 'chyba'); else setResult(e.result); return }
-      if (e.phase === 'detective') setLive((l) => [...l, e])
-    })
+    try {
+      const { job_id } = await api.startDetective(runId)
+      watchJob(job_id, (e) => {
+        if (e.final) { setRunning(false); if (e.status === 'error') setErr(e.error ?? 'chyba'); else setResult(e.result); return }
+        if (e.phase === 'detective') setLive((l) => [...l, e])
+      })
+    } catch (error) {
+      setRunning(false)
+      setErr(error instanceof Error ? error.message : 'Detektiva se nepodařilo spustit.')
+    }
   }
   const steps = result?.transcript ?? []
   return (
@@ -148,18 +153,28 @@ export function DetectiveTab({ runId }: { runId: string }) {
               <span className={`chip border text-sm ${result.score.score >= 80 ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-amber-50 text-amber-800 border-amber-200'}`}>shoda s ground truth: {result.score.score} %</span>
             </div>
             <p className="text-sm">{result.final?.root_cause}</p>
+            {result.final?.key_events?.length > 0 && <ResultTable
+              columns={['Zjištěná událost', 'Začátek', 'Skupina', 'ID']}
+              rows={result.final.key_events.map((k: Json) => [k.description, k.start_time, k.entity, k.entity_ids?.join(', ') || null])} />}
+            {result.final?.estimated_effects?.length > 0 && <ResultTable
+              columns={['Příčina / prediktor', 'Výsledek', 'Typ odhadu', 'Odhad', 'Důkazy']}
+              rows={result.final.estimated_effects.map((f: Json) => [f.source, f.target, f.effect_type, f.estimate, f.evidence_ids?.join(', ')])} />}
+            {result.final?.limitations?.length > 0 && <p className="text-xs text-slate-600 mt-2">Omezení analýzy: {result.final.limitations.join(' · ')}</p>}
+            {result.final?.alternatives?.length > 0 && <p className="text-xs text-slate-600 mt-2">Další možná vysvětlení: {result.final.alternatives.join(' · ')}</p>}
             {result.final?.causal_chain?.length > 0 && <ol className="text-sm list-decimal ml-5 mt-2">{result.final.causal_chain.map((c: string) => <li key={c}>{c}</li>)}</ol>}
             {result.final?.ruled_out?.length > 0 && <div className="text-xs text-slate-600 mt-2">Vyloučeno: {result.final.ruled_out.join(' · ')}</div>}
             <table className="data mt-3"><thead><tr><th></th><th>Kritérium</th><th>Očekáváno</th><th>Nalezeno</th></tr></thead>
-              <tbody>{result.score.checks.map((c: Json) => <tr key={c.name}><td>{c.ok ? '✓' : '✖'}</td><td>{c.name}</td><td className="text-xs">{c.expected ?? ''}</td><td className="text-xs">{c.got ?? ''}</td></tr>)}</tbody></table>
+              <tbody>{result.score.checks.map((c: Json) => <tr key={c.name}><td>{c.ok == null ? '–' : c.ok ? '✓' : '✖'}</td><td>{c.name}</td><td className="text-xs">{c.expected ?? ''}</td><td className="text-xs">{c.got ?? ''}</td></tr>)}</tbody></table>
           </div>
           <div className="space-y-2">
             {steps.map((s: Json) => (
               <details key={s.step} className="card p-3" open={!!s.sql && s.step < 2}>
                 <summary className="text-sm cursor-pointer"><b>Krok {s.step + 1}</b> – {s.thought}</summary>
                 {s.sql && <pre className="mono text-[11px] bg-slate-50 p-2 mt-2 whitespace-pre-wrap">{s.sql}</pre>}
-                {s.observation?.ok && <ResultTable columns={s.observation.columns} rows={s.observation.rows} max={40} />}
-                {s.observation && !s.observation.ok && <div className="text-xs text-red-700">{s.observation.error}</div>}
+                {s.observation?.ok && (Array.isArray(s.observation.columns) && Array.isArray(s.observation.rows)
+                  ? <ResultTable columns={s.observation.columns} rows={s.observation.rows} max={40} />
+                  : <pre className="text-xs whitespace-pre-wrap break-words">{s.observation.summary}</pre>)}
+                {s.observation && !s.observation.ok && <div className="text-xs text-red-700">{s.observation.error || s.observation.summary}</div>}
               </details>
             ))}
           </div>
@@ -222,9 +237,14 @@ export function GroundTruthTab({ runId }: { runId: string }) {
 }
 
 function ScmGroundTruth({ gt }: { gt: Json }) {
-  const story = gt.story?.refined || gt.story?.original
-  const facts: Json[] = gt.realized_story_facts ?? []
-  const events: Json[] = gt.realized_events ?? []
+  const story = gt.story?.original || gt.story?.refined
+  const allEvents: Json[] = gt.realized_events ?? []
+  const distractors = new Set(allEvents.filter((e) => e.kind === 'distractor').map((e) => e.event_id))
+  const storyFacts: Json[] = gt.story_facts ?? []
+  const excluded = new Set(storyFacts.filter((f) => distractors.has(f.event_id) && !f.source_quote).map((f) => f.fact_id))
+  const facts: Json[] = (gt.realized_story_facts ?? []).filter((f: Json) => !excluded.has(f.fact_id))
+  const linkedEvents = new Set(storyFacts.filter((f) => !excluded.has(f.fact_id)).map((f) => f.event_id))
+  const events = allEvents.filter((e) => e.kind === 'story' || linkedEvents.has(e.event_id))
   return <div className="space-y-4">
     <section className="card p-4 space-y-2">
       <h3 className="font-semibold">Fakta kauzálního modelu</h3>
@@ -235,7 +255,7 @@ function ScmGroundTruth({ gt }: { gt: Json }) {
     </section>
     {events.length > 0 && <section className="card p-4 space-y-2">
       <h3 className="font-semibold">Události v datech</h3>
-      <ResultTable columns={['Událost', 'Od', 'Do', 'Zasažené řádky podle proměnné', 'Projevila se']}
+      <ResultTable columns={['Událost', 'Od', 'Do', 'Počet vybraných řádků podle proměnné', 'Vybrán alespoň jeden řádek']}
         rows={events.map((e) => [
           e.description || e.event_id, e.first_date ?? e.first_step, e.last_date ?? e.last_step,
           Object.entries(e.affected_rows ?? {}).map(([variable, count]) => `${variable}: ${fmt(count)}`).join(', ') || null,
