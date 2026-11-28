@@ -6,11 +6,12 @@ numpy>=2.5.5
 pydantic>=2.14.4
 python-dotenv>=1.2.4
 sse-starlette>=3.7.1
-pytest>=9.2.0
-httpx>=0.29.0
+httpx>=0.29.0   # Supabase PostgREST / Storage / Auth admin calls
 fpdf2>=2.9.0
 # causal core (app/causal)
 scipy>=1.14
 networkx>=3.3
 sqlglot>=25.0
 pyyaml>=6.0
+# auth (Supabase access-token verification via JWKS, ES256/RS256)
+pyjwt[crypto]>=2.10

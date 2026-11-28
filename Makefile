@@ -1,8 +1,8 @@
 .PHONY: setup dev mock test seed seed-mock build
 
 setup:            ## install backend (uv/venv) and frontend deps
-	cd backend && (command -v uv >/dev/null && uv venv --python 3.13 .venv && uv pip install --python .venv/bin/python -r requirements.txt \
-	  || (python3 -m venv .venv && .venv/bin/pip install -r requirements.txt))
+	cd backend && (command -v uv >/dev/null && uv venv --python 3.13 .venv && uv pip install --python .venv/bin/python -r requirements-dev.txt \
+	  || (python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt))
 	cd frontend && npm install
 	@[ -f .env ] || cp .env.example .env
 

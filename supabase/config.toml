@@ -1,0 +1,47 @@
+# Supabase CLI project config (local development: `supabase start`, `supabase db reset`).
+# Only the settings relevant to Story2Data are listed; the CLI fills in defaults for the rest.
+project_id = "story2data"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+major_version = 17
+
+[db.seed]
+enabled = true
+sql_paths = ["./seed.sql"]
+
+[storage]
+enabled = true
+file_size_limit = "50MiB"
+
+[auth]
+enabled = true
+# Vite dev server; preview/production URLs are configured in the hosted project's dashboard.
+site_url = "http://localhost:5173"
+additional_redirect_urls = ["http://localhost:5173/**", "http://127.0.0.1:5173/**"]
+jwt_expiry = 3600
+enable_refresh_token_rotation = true
+refresh_token_reuse_interval = 10
+enable_signup = true
+enable_anonymous_sign_ins = false
+minimum_password_length = 8
+
+[auth.email]
+enable_signup = true
+enable_confirmations = false   # local only: Inbucket catches mails anyway; keep ON in hosted projects
+double_confirm_changes = true
+secure_password_change = true
+max_frequency = "1m0s"
+
+[auth.external.google]
+enabled = false
+client_id = "env(SUPABASE_AUTH_GOOGLE_CLIENT_ID)"
+secret = "env(SUPABASE_AUTH_GOOGLE_SECRET)"
+skip_nonce_check = false
