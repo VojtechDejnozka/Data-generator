@@ -35,6 +35,9 @@ export function DashboardTab({ runId, canRefresh }: { runId: string; canRefresh:
       <div className="flex items-center gap-2 text-sm">
         <h2 className="text-lg font-bold flex-1">{d.meta.title ?? 'Dashboard'}</h2>
         <span className="chip bg-slate-100">zdroj: {d.meta.source === 'scm' ? 'kauzální model' : d.meta.source === 'spec' ? 'návrh STRONG modelu (validováno)' : 'výchozí z důkazních dotazů'}</span>
+        {canRefresh && <button className="btn" disabled={running} onClick={() => void refresh()}>
+          {running ? 'Navrhuji grafy…' : 'Navrhnout grafy přes AI'}
+        </button>}
       </div>
       {error && <div role="alert" className="text-sm text-red-700">{error}</div>}
       {d.widgets.length === 0 && <p className="text-sm text-slate-600">Pro tento běh zatím nejsou dostupné grafy.</p>}

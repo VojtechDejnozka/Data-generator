@@ -140,6 +140,14 @@ async def difficulty_stage(job: Job) -> None:
                                       should_stop=lambda: job.cancelled)
 
 
+async def dashboard_stage(job: Job) -> None:
+    from .causal.service import refresh_scm_dashboard
+
+    run_id = job.state["run_id"]
+    job.touch(run_id)
+    job.result = await refresh_scm_dashboard(run_id, job)
+
+
 # --------------------------------------------------------------------------- documents
 async def doc_plan_stage(job: Job) -> None:
     from .contracts.docs import DocInput
@@ -192,6 +200,7 @@ register("whatif", RUN_STAGES, first="plan")
 register("detective", {"detective": _single(detective_stage)})
 register("observe", {"observe": _single(observe_stage)})
 register("difficulty", {"difficulty": _single(difficulty_stage)})
+register("dashboard", {"dashboard": _single(dashboard_stage)})
 register("doc_plan", {"plan": _single(doc_plan_stage)})
 register("doc_replan", {"replan": _single(doc_replan_stage)})
 register("doc_run", {"run": _single(doc_run_stage)})

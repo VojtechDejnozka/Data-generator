@@ -83,7 +83,7 @@ export default function RunView({ runId, shared = false }: { runId?: string; sha
       </div>
       {tab === 'report' && (report ? <ReportTab report={report} onSql={(s) => { setSql(s); go('sql') }} /> : <div className="text-slate-500">Načítám report…</div>)}
       {tab === 'data' && schema && <DataBrowser runId={run.run_id} schema={schema} onFiles={(t) => setParams({ tab: 'files', table: t })} />}
-      {tab === 'dashboard' && <DashboardTab key={run.run_id} runId={run.run_id} canRefresh={run.engine === 'scm' && run.status === 'done'} />}
+      {tab === 'dashboard' && <DashboardTab key={run.run_id} runId={run.run_id} canRefresh={!shared && run.own && run.engine === 'scm' && run.status === 'done'} />}
       {tab === 'sql' && <SqlTab runId={run.run_id} initial={sql} />}
       {tab === 'whatif' && <WhatIfTab run={run} />}
       {tab === 'files' && <FilesFromData runId={run.run_id} initialTable={params.get('table') ?? undefined} />}
