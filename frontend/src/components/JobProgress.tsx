@@ -46,32 +46,32 @@ export default function JobProgress({ jobId, onDone, phases = RUN_PHASES, title 
   useEffect(() => { logRef.current?.scrollTo(0, logRef.current.scrollHeight) }, [events.length])
 
   return (
-    <div className="card p-5">
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="font-semibold">{title}</h3>
+    <div aria-live="polite">
+      <div className="flex items-baseline justify-between mb-3">
+        <h3 className="text-[21px] font-semibold tracking-[-0.01em]">{title}</h3>
         <span className="text-sm text-slate-500 tabular-nums">{Math.round(progress * 100)} %</span>
       </div>
-      <div className="h-2 bg-slate-100 rounded-full overflow-hidden mb-4">
-        <div className="h-full bg-blue-600 transition-all" style={{ width: `${progress * 100}%` }} />
+      <div className="h-1 bg-slate-100 mb-5" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress * 100)}>
+        <div className={`h-full transition-all duration-500 ${error ? 'bg-red-700' : 'bg-ink'}`} style={{ width: `${progress * 100}%` }} />
       </div>
       {phases.length > 1 && (
-        <ol className="flex flex-wrap gap-2 mb-4">
+        <ol className="flex flex-wrap gap-x-5 gap-y-1.5 mb-5 text-sm">
           {phases.map(([id, label]) => {
             const active = id === current && !error
             const ok = seen.has(id) && !active
             return (
-              <li key={id} className={`chip border ${active ? 'bg-blue-50 border-blue-300 text-blue-800' : ok ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-white border-slate-200 text-slate-400'}`}>
-                {ok ? '✓ ' : active ? '● ' : ''}{label}
+              <li key={id} className={active ? 'mark font-medium' : ok ? 'text-ink' : 'text-slate-400'}>
+                {ok && <span aria-hidden="true" className="mr-1">✓</span>}{label}
               </li>
             )
           })}
         </ol>
       )}
-      <div ref={logRef} className="mono text-xs bg-slate-900 text-slate-100 rounded-lg p-3 h-48 overflow-auto">
+      <div ref={logRef} className="mono text-xs leading-relaxed bg-slate-50 border border-line rounded-md p-3 h-48 overflow-auto">
         {events.map((e, i) => (
-          <div key={i}><span className="text-slate-500">{e.t?.toFixed(1)}s</span> <span className="text-sky-300">[{e.phase}]</span> {e.message}</div>
+          <div key={i}><span className="text-slate-400 tabular-nums">{e.t?.toFixed(1)}s</span> <span className="text-slate-500">{e.phase}</span> {e.message}</div>
         ))}
-        {error && <div className="text-red-300 mt-2">✖ {error}</div>}
+        {error && <div className="text-red-700 mt-2">✕ {error}</div>}
       </div>
     </div>
   )

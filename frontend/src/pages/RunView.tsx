@@ -39,7 +39,7 @@ export default function RunView() {
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex-1 min-w-0">
           <div className="text-xs text-slate-500 mono">{run.run_id}{run.parent_run_id && <> · what-if z <Link className="text-blue-700" to={`/runs/${run.parent_run_id}`}>{run.parent_run_id}</Link></>}</div>
-          <h1 className="text-xl font-bold truncate">{run.name} <span className="text-slate-500 font-normal text-base">– {run.label}</span></h1>
+          <h1 className="text-[28px] leading-tight font-semibold tracking-[-0.015em] truncate">{run.name} <span className="text-slate-500 font-normal text-base">– {run.label}</span></h1>
         </div>
         <VerdictChip v={run.verdict?.verdict} />
         {run.engine === 'scm' && <span className="chip bg-indigo-50 text-indigo-800 border border-indigo-200"

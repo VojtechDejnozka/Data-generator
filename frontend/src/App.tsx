@@ -11,33 +11,30 @@ import DocSpecReview from './pages/DocSpecReview'
 import DocRunView from './pages/DocRunView'
 
 const navCls = ({ isActive }: { isActive: boolean }) =>
-  `px-3 py-1.5 rounded-lg ${isActive ? 'bg-blue-50 text-blue-800 font-medium' : 'hover:bg-slate-100'}`
+  `${isActive ? 'mark text-ink' : 'text-slate-500 hover:text-ink'}`
 
 export default function App() {
   const [health, setHealth] = useState<Json>(null)
   useEffect(() => { api.health().then(setHealth).catch(() => setHealth({ ok: false })) }, [])
   return (
     <div className="min-h-screen">
-      <header className="bg-white border-b border-slate-200">
-        <div className="max-w-7xl mx-auto px-4 h-14 flex items-center gap-6">
-          <Link to="/" className="font-bold text-lg tracking-tight">Story<span className="text-blue-600">2</span>Data</Link>
-          <span className="text-sm text-slate-500 hidden md:inline">Od příběhu k datům</span>
-          <nav className="flex gap-1 text-sm ml-4">
-            <NavLink to="/" end className={navCls}>Data – běhy</NavLink>
+      <header>
+        <div className="max-w-6xl mx-auto px-5 md:px-8 pt-6 pb-4 flex flex-wrap items-baseline gap-x-8 gap-y-2">
+          <Link to="/" className="text-[17px] font-semibold tracking-[-0.01em]">Story2Data</Link>
+          <nav className="flex items-baseline gap-6 text-sm">
+            <NavLink to="/" end className={navCls}>Běhy</NavLink>
             <NavLink to="/new" className={navCls}>Nový scénář</NavLink>
             <NavLink to="/docs" className={navCls}>Dokumenty</NavLink>
           </nav>
-          <div className="ml-auto text-xs">
-            {health?.ok === false && <span className="chip bg-red-50 text-red-700">backend nedostupný</span>}
+          <div className="ml-auto text-xs text-slate-500 flex items-center gap-1.5">
+            {health?.ok === false && <><span className="size-1.5 rounded-full bg-red-700" aria-hidden="true" /><span className="text-red-700">Backend neodpovídá</span></>}
             {health?.ok && (health.mock
-              ? <span className="chip bg-amber-50 text-amber-800 border border-amber-200" title="LLM_MOCK=1 nebo chybí klíč">MOCK režim (fixtures)</span>
-              : <span className="chip bg-emerald-50 text-emerald-800 border border-emerald-200" title={`fallback: ${health.strong_fallbacks?.join(', ')}`}>
-                  Gemini · STRONG {health.strong_model} · CHEAP {health.cheap_model}
-                </span>)}
+              ? <><span className="size-1.5 rounded-full bg-amber-400" aria-hidden="true" /><span title="LLM_MOCK=1 nebo chybí klíč">Mock režim, odpovědi z fixtures</span></>
+              : <><span className="size-1.5 rounded-full bg-emerald-700" aria-hidden="true" /><span title={`STRONG ${health.strong_model}, fallback: ${health.strong_fallbacks?.join(', ')}`}>Gemini {health.strong_model}</span></>)}
           </div>
         </div>
       </header>
-      <main className="max-w-7xl mx-auto px-4 py-6">
+      <main className="max-w-6xl mx-auto px-5 md:px-8 pt-6 pb-24">
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/new" element={<NewScenario />} />

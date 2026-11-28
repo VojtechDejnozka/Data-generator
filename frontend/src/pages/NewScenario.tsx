@@ -68,7 +68,7 @@ export default function NewScenario() {
   }
 
   if (job) return (
-    <div className="max-w-3xl mx-auto space-y-4">
+    <div className="max-w-3xl space-y-4">
       <JobProgress jobId={job} title={scm ? 'Navrhuji kauzální model' : 'Navrhuji scénář'}
         phases={[["plan", "Návrh"], ["done", "Hotovo"]]} onDone={(r) => nav(`/plan/${r.session_id}`)} />
       <button className="btn" onClick={() => setJob(null)}>Zpět k zadání</button>
@@ -76,9 +76,9 @@ export default function NewScenario() {
   )
 
   return (
-    <form className="max-w-4xl mx-auto card p-6 space-y-5" onSubmit={(e) => { e.preventDefault(); void submit() }}>
+    <form className="max-w-3xl space-y-7" onSubmit={(e) => { e.preventDefault(); void submit() }}>
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-xl font-bold">Nový scénář</h1>
+        <h1 className="text-[28px] leading-tight font-semibold tracking-[-0.015em]">Nový scénář</h1>
         {engine === 'module' && presets.map((p) => (
           <button type="button" key={p.id} className="btn" onClick={() => {
             setStory(p.input.story); setVolume(p.input.volume); setSeed(p.input.seed); setPreset(p.id)
