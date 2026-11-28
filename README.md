@@ -105,12 +105,20 @@ v promptu. Pokud plánovaný příběh odpovídá modulu, STRONG vrací jen komp
   neposune náhodnost jiných částí. What-if běhy mají **identickou poptávku**.
 
 ## Kauzální jádro – spustitelný SCM (`backend/app/causal/`)
-Obecný deklarativní engine strukturálních kauzálních modelů: z příběhu (LLM planner, `engine: "scm"`) nebo
-z deklarativní konfigurace (`backend/app/causal/scenarios/*.json` – retail a školství) vznikne editovatelný SCM
-(entity a granularity, proměnné, mechanismy, distribuce, události), z něj čistá relační realita s ground truth,
-čtyřvrstvá validace, pozorovaná (poškozená) databáze, slepý detektiv a evaluace. Obtížnost 0–100 se buď
-změří pro zadané poškození (manuál), nebo se poškození dohledá automaticky k cílové obtížnosti.
-Kontrakty, API a omezení: [`docs/CAUSAL_CORE.md`](docs/CAUSAL_CORE.md).
+
+- V **Novém scénáři** zvolte SCM a popište příběh. Soubory SQL a Turtle (`.sql`, `.ttl`, každý do 50 000 znaků)
+  dávají plánovači podpůrný kontext. Počty tabulek, kauzálních proměnných, instancí základních entit a
+  řádků jsou orientační. Klasický scénář zůstává dostupný ve stejném formuláři.
+- Existující SCM v JSON lze otevřít přímo po kontrole formátu a spustitelnosti. Editor používá model současně
+  pro graf, parametry mechanismů a export. Exportovaný JSON obsahuje seed a verzi formátu. Stejný model
+  a verze enginu dávají při stejném seedu stejná čistá data včetně textů ze šablon.
+- Po validaci čistých dat **automatický režim** zkouší různé konfigurace pozorovacích chyb a vybere nejlepší
+  dostupnou podle odhadu analytické obtížnosti. **Ruční režim** vytvoří jednu pozorovanou kopii bez evaluace.
+  Procento NA je pravděpodobnost chybějící hodnoty v každé způsobilé buňce. Pozorovací šum je normální chyba
+  se směrodatnou odchylkou zadanou jako procento odchylky čistého číselného sloupce. SQLite s pozorovanými
+  daty má na výsledku samostatný odkaz. Report, dashboard a prohlížeč pracují s čistými daty.
+
+Kontrakty, API a omezení popisuje [dokumentace kauzálního jádra](docs/CAUSAL_CORE.md).
 
 ## Generátor dokumentů (záložka *Dokumenty*)
 Stejná pipeline pro nestrukturované výstupy – lékařské zprávy, dopisy, e-maily, posudky, reporty…

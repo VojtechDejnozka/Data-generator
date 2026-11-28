@@ -96,6 +96,7 @@ export default function SpecReview() {
   const [feedback, setFeedback] = useState('')
   const [job, setJob] = useState<{ id: string; kind: 'replan' | 'run' } | null>(null)
   const [errors, setErrors] = useState<string[]>([])
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   const load = () => api.session(sid!).then((s) => {
     setSession(s)
@@ -105,12 +106,14 @@ export default function SpecReview() {
     setDecisions({})
     setFeedback('')
   })
-  useEffect(() => { load() }, [sid]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load().catch((e) => setLoadError(String(e))) }, [sid]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const resp: PlannerResponse | null = session?.response ?? null
   const edges = useMemo(() => spec?.tables.flatMap((t) => t.columns.filter((c) => c.fk).map((c) => `${t.name}.${c.name} → ${c.fk}`)) ?? [], [spec])
 
+  if (loadError) return <div role="alert" className="text-red-700">{loadError}</div>
   if (!spec || !resp) return <div className="text-slate-500">Načítám specifikaci…</div>
+  if (spec.scm) return <ScmPanel key={sid} spec={spec} input={session.input} />
 
   const updTable = (i: number, t: Table) => setSpec({ ...spec, tables: spec.tables.map((x, j) => (j === i ? t : x)) })
   const accepted = resp.suggestions.filter((s) => decisions[s.id] === 'accept')
@@ -151,9 +154,7 @@ export default function SpecReview() {
           <div className="flex items-center gap-3 mb-3">
             <h1 className="text-xl font-bold flex-1">2 · Review specifikace</h1>
             <span className="chip bg-slate-100">kolo {session.round}</span>
-            {spec.scm
-              ? <span className="chip border bg-indigo-50 border-indigo-200 text-indigo-800" title="Data vzniknou z rovnic strukturálního kauzálního modelu">kauzální engine (SCM)</span>
-              : spec.meta.archetype
+            {spec.meta.archetype
               ? <span className="chip border bg-violet-50 border-violet-200 text-violet-800" title="Kauzální simulátor">modul: {spec.meta.archetype}</span>
               : <span className="chip border bg-teal-50 border-teal-200 text-teal-800">obecná cesta llm_rows</span>}
           </div>
@@ -172,7 +173,7 @@ export default function SpecReview() {
             )}
             <div><label className="label">Seed</label><input type="number" className="input" value={spec.meta.seed} onChange={(e) => {
               const seed = Number(e.target.value)
-              setSpec({ ...spec, meta: { ...spec.meta, seed }, ...(spec.scm ? { scm: { ...spec.scm, meta: { ...spec.scm.meta, seed } } } : {}) })
+              setSpec({ ...spec, meta: { ...spec.meta, seed } })
             }} /></div>
             <div><label className="label">Jazyk dat</label><input className="input" value={spec.meta.data_language} onChange={(e) => setSpec({ ...spec, meta: { ...spec.meta, data_language: e.target.value } })} /></div>
           </div>
@@ -182,11 +183,6 @@ export default function SpecReview() {
           </div>
           {resp.notes && <pre className="mt-3 text-xs bg-slate-50 border border-slate-200 rounded p-2 whitespace-pre-wrap">{resp.notes}</pre>}
         </div>
-
-        {spec.scm && <ScmPanel scm={spec.scm} onChange={(scm, d) => setSpec((prev) => prev && ({
-          ...prev, scm, tables: d.tables, story: d.story, evidence: d.evidence, dashboard: d.dashboard,
-          meta: { ...prev.meta, period_start: d.meta.period_start, period_end: d.meta.period_end, seed: scm.meta.seed },
-        }))} />}
 
         <div className="card p-5 space-y-3">
           <h2 className="font-semibold">Příběh a kauzální řetězec</h2>

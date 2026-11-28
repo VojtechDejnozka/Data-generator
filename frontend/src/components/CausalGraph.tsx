@@ -1,7 +1,7 @@
 // SVG diagram of an executable SCM. Colour = entity (fixed categorical order, legend + text labels, so
 // identity is never colour-alone). Secondary encodings: hollow dashed node = latent, diamond + ⚡ = changed
 // by an event, dashed edge = time lag (t−k), edge label = sign / aggregation, ↻ = depends on its own past.
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { type Json } from '../api'
 import { R, layoutGraph } from './causalGraphLayout'
 
@@ -23,6 +23,8 @@ export default function CausalGraph({ scm, edges, mechanisms, showLabels, select
   const [hidden, setHidden] = useState<Set<string>>(new Set())
   const [hover, setHover] = useState<string | null>(null)
   const [tip, setTip] = useState<{ x: number; y: number; lines: string[] } | null>(null)
+  const [zoom, setZoom] = useState(1)
+  const drag = useRef<{ x: number; y: number; left: number; top: number } | null>(null)
   const g = useMemo(() => layoutGraph(scm, edges, mechanisms, showLabels, hidden),
     [scm, edges, mechanisms, showLabels, hidden])
 
@@ -48,8 +50,28 @@ export default function CausalGraph({ scm, edges, mechanisms, showLabels, select
           </button>
         ))}
       </div>
-      <div className="overflow-x-auto">
-        <svg width={g.width} height={g.height} viewBox={`0 0 ${g.width} ${g.height}`} role="img"
+      <div className="flex items-center gap-2 px-2 py-1">
+        <button className="btn text-xs" aria-label="Oddálit graf" disabled={zoom <= 0.4}
+          onClick={() => setZoom(Math.max(0.4, zoom - 0.2))}>−</button>
+        <button className="btn text-xs" aria-label="Výchozí přiblížení" onClick={() => setZoom(1)}>{Math.round(zoom * 100)} %</button>
+        <button className="btn text-xs" aria-label="Přiblížit graf" disabled={zoom >= 2.4}
+          onClick={() => setZoom(Math.min(2.4, zoom + 0.2))}>+</button>
+      </div>
+      <div className="overflow-auto max-h-[32rem] cursor-grab active:cursor-grabbing"
+        onPointerDown={(ev) => {
+          if (ev.pointerType !== 'mouse' || ev.button !== 0 || (ev.target as Element).closest('[data-graph-node]')) return
+          const el = ev.currentTarget
+          drag.current = { x: ev.clientX, y: ev.clientY, left: el.scrollLeft, top: el.scrollTop }
+          el.setPointerCapture(ev.pointerId)
+          setTip(null)
+        }}
+        onPointerMove={(ev) => {
+          if (!drag.current) return
+          const { x, y, left, top } = drag.current
+          ev.currentTarget.scrollTo(left + x - ev.clientX, top + y - ev.clientY)
+        }}
+        onLostPointerCapture={() => { drag.current = null }}>
+        <svg width={g.width * zoom} height={g.height * zoom} viewBox={`0 0 ${g.width} ${g.height}`} role="img"
           aria-label="Diagram kauzálního modelu: příčiny vlevo, následky vpravo" style={{ display: 'block' }}
           onMouseLeave={() => { setHover(null); setTip(null) }}>
           <defs>
@@ -77,7 +99,7 @@ export default function CausalGraph({ scm, edges, mechanisms, showLabels, select
             const on = !near || near.has(n.id)
             const label = `${n.evented ? '⚡ ' : ''}${n.id}${n.selfLag ? ' ↻' : ''}`
             return (
-              <g key={n.id} opacity={on ? 1 : 0.25} style={{ cursor: onSelect ? 'pointer' : 'default' }}
+              <g key={n.id} data-graph-node opacity={on ? 1 : 0.25} style={{ cursor: onSelect ? 'pointer' : 'default' }}
                 onMouseEnter={() => setHover(n.id)} onMouseMove={(ev) => showTip(ev, n.tip)}
                 onMouseLeave={() => { setHover(null); setTip(null) }} onClick={() => onSelect?.(n.id)}>
                 <circle cx={n.x} cy={n.y} r={R + 8} fill="transparent" />

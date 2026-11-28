@@ -73,7 +73,7 @@ export function layoutGraph(scm: Json, edgesIn: Json[], mechanisms: Record<strin
     }
   })
   const bottom = PAD.top + 14 + (maxLayer - 1) * DY
-  const out: GEdge[] = edges.map((e) => {
+  const out: GEdge[] = edges.map((e, i) => {
     const s = pos(e.source), t = pos(e.target)
     const back = (rank.get(e.target) ?? 0) <= (rank.get(e.source) ?? 0)
     let path: string, lx: number, ly: number
@@ -89,8 +89,9 @@ export function layoutGraph(scm: Json, edgesIn: Json[], mechanisms: Record<strin
     }
     const sign = e.effect_direction === '+' ? '+' : e.effect_direction === '-' ? '−' : ''
     return {
-      id: `${e.source}>${e.target}`, source: e.source, target: e.target, path, lx, ly, lag: !!e.lag, back,
-      label: [sign, e.lag ? `t−${e.lag}` : '', e.aggregation ? `[${e.aggregation}]` : ''].filter(Boolean).join(' '),
+      id: `${e.source}>${e.target}:${i}`, source: e.source, target: e.target, path, lx, ly, lag: !!e.lag, back,
+      label: [e.optional_coefficient ?? sign, e.lag ? `t−${e.lag}` : '', e.aggregation ? `[${e.aggregation}]` : '']
+        .filter((value) => value !== '').join(' '),
       tip: `${e.source} → ${e.target}${e.lag ? ` · zpoždění ${e.lag} krok(y)` : ''}${e.aggregation ? ` · agregace ${e.aggregation}` : ''}`
         + `${e.optional_coefficient != null ? ` · koeficient ${e.optional_coefficient}` : ''} · ${e.entity_mapping}`,
     }

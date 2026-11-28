@@ -1,110 +1,150 @@
-import { useEffect, useState } from 'react'
+﻿import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, type Json } from '../api'
 import JobProgress from '../components/JobProgress'
 
-// Only the story, data size and seed come from the user. Everything else (company, environment,
-// entity counts, whether there is a time axis and which period, story intensity) is decided by
-// the STRONG model and can be reviewed/edited on the next screen.
-const SIZES: [string, string, string][] = [
-  ['small', 'Malý', 'desítky až stovky řádků v hlavních tabulkách – rychlé generování'],
-  ['medium', 'Střední', 'stovky až tisíce řádků; u simulací stovky tisíc transakcí'],
-  ['large', 'Velký', 'tisíce řádků; u simulací až ~1 mil. transakcí'],
-]
+const TARGETS = [
+  ['tables', 'Tabulky'],
+  ['variables', 'Kauzální proměnné'],
+  ['entity_instances', 'Instance základních entit'],
+  ['rows', 'Řádky celkem'],
+] as const
 
-const ENGINES: ['module' | 'scm', string, string][] = [
-  ['module', 'Scénářový modul / obecná cesta', 'Hotový simulátor archetypu, nebo tabulky generované LLM po dávkách (původní cesta).'],
-  ['scm', 'Kauzální engine (SCM)', 'Gemini navrhne spustitelný strukturální kauzální model – entity, rovnice, distribuce, události; '
-    + 'data vzniknou programově z rovnic a projdou mechanistickou i statistickou validací.'],
-]
+async function readContext(file: File | null) {
+  if (!file) return ''
+  const text = await file.text()
+  if (text.length > 50000) throw new Error(`Soubor ${file.name} překračuje limit 50 000 znaků.`)
+  return text
+}
 
 export default function NewScenario() {
   const [story, setStory] = useState('')
   const [volume, setVolume] = useState('medium')
   const [seed, setSeed] = useState(42)
   const [preset, setPreset] = useState<string | null>(null)
-  const [engine, setEngine] = useState<'module' | 'scm'>('module')
+  const [engine, setEngine] = useState<'module' | 'scm'>('scm')
   const [presets, setPresets] = useState<Json[]>([])
+  const [sql, setSql] = useState<File | null>(null)
+  const [ontology, setOntology] = useState<File | null>(null)
+  const [model, setModel] = useState<File | null>(null)
+  const [targets, setTargets] = useState<Partial<Record<(typeof TARGETS)[number][0], number>>>({})
+  const [mode, setMode] = useState<'automatic' | 'manual'>('automatic')
+  const [target, setTarget] = useState(50)
+  const [missing, setMissing] = useState('0')
+  const [noise, setNoise] = useState('0')
   const [job, setJob] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
   const nav = useNavigate()
+  const scm = engine === 'scm'
+  const importing = scm && !!model
+
   useEffect(() => { api.presets().then(setPresets).catch(() => undefined) }, [])
 
   const submit = async () => {
     setErr(null)
-    if (story.trim().length < 10) { setErr('Popište příběh (alespoň pár vět).'); return }
-    try { setJob((await api.plan({ story, volume, seed, preset: engine === 'scm' ? null : preset, engine })).job_id) } catch (e) { setErr(String(e)) }
+    setBusy(true)
+    const observation = mode === 'automatic' ? { mode, target }
+      : { mode, missing_percent: Number(missing), noise_percent: Number(noise) }
+    try {
+      if (scm && model) {
+        let data: Json
+        try { data = JSON.parse((await model.text()).replace(/^\uFEFF/, '')) } catch { throw new Error('Soubor SCM nemá platný formát JSON.') }
+        if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('Soubor SCM musí obsahovat model jako objekt JSON.')
+        nav(`/plan/${(await api.scmImport(data, observation)).session_id}`)
+        return
+      }
+      if (story.trim().length < 10) throw new Error('Popište příběh alespoň deseti znaky.')
+      const [sql_schema, ontologyText] = scm ? await Promise.all([readContext(sql), readContext(ontology)]) : ['', '']
+      const complexity = scm ? targets : { tables: targets.tables, rows: targets.rows }
+      const result = await api.plan({ story: story.trim(), volume, seed, preset: scm ? null : preset, engine, complexity,
+        ...(scm ? { sql_schema, ontology: ontologyText, observation } : {}) })
+      setJob(result.job_id)
+    } catch (error) {
+      setErr(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBusy(false)
+    }
   }
 
-  if (job) {
-    return (
-      <div className="max-w-3xl mx-auto space-y-4">
-        <JobProgress jobId={job} title={engine === 'scm' ? 'STRONG model navrhuje kauzální model (SCM)' : 'STRONG model navrhuje scénář'} phases={[['plan', 'Návrh ScenarioSpec'], ['done', 'Hotovo']]}
-          onDone={(r) => nav(`/plan/${r.session_id}`)} />
-        <button className="btn" onClick={() => setJob(null)}>Zpět k zadání</button>
-      </div>
-    )
-  }
+  if (job) return (
+    <div className="max-w-3xl mx-auto space-y-4">
+      <JobProgress jobId={job} title={scm ? 'Navrhuji kauzální model' : 'Navrhuji scénář'}
+        phases={[["plan", "Návrh"], ["done", "Hotovo"]]} onDone={(r) => nav(`/plan/${r.session_id}`)} />
+      <button className="btn" onClick={() => setJob(null)}>Zpět k zadání</button>
+    </div>
+  )
 
   return (
-    <div className="max-w-4xl mx-auto card p-6 space-y-5">
-      <div className="flex items-center justify-between gap-4">
-        <h1 className="text-xl font-bold">1 · Zadání příběhu</h1>
-        <div className="flex gap-2">
-          {presets.map((p) => (
-            <button key={p.id} className="btn" title={p.description}
-              onClick={() => { setStory(p.input.story); setVolume(p.input.volume); setSeed(p.input.seed); setPreset(p.id); setEngine('module') }}>
-              ⚡ Preset: {p.title}
-            </button>
-          ))}
+    <form className="max-w-4xl mx-auto card p-6 space-y-5" onSubmit={(e) => { e.preventDefault(); void submit() }}>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-xl font-bold">Nový scénář</h1>
+        {engine === 'module' && presets.map((p) => (
+          <button type="button" key={p.id} className="btn" onClick={() => {
+            setStory(p.input.story); setVolume(p.input.volume); setSeed(p.input.seed); setPreset(p.id)
+          }}>{p.title}</button>
+        ))}
+      </div>
+      <label className="block"><span className="label">Způsob generování</span>
+        <select className="input max-w-sm" value={engine} onChange={(e) => setEngine(e.target.value as 'module' | 'scm')}>
+          <option value="scm">Kauzální model (SCM)</option><option value="module">Klasický scénář</option>
+        </select>
+      </label>
+      {!importing && <label className="block"><span className="label">Popis scénáře</span>
+        <textarea className="input min-h-40" maxLength={8000} value={story}
+          onChange={(e) => { setStory(e.target.value); setPreset(null) }}
+          placeholder="Popište prostředí, co se stalo a jaké souvislosti mají být v datech vidět." />
+      </label>}
+      {scm && <fieldset className="border-t border-slate-200 pt-3">
+        <legend className="font-semibold text-sm pr-2">Vstupní soubory (volitelné)</legend>
+        <div className="grid md:grid-cols-3 gap-3">
+          {!importing && <>
+            <label><span className="label">SQL schéma (.sql)</span><input className="input text-xs" type="file" accept=".sql" onChange={(e) => setSql(e.target.files?.[0] ?? null)} />{sql && <span className="text-xs text-slate-600">{sql.name}</span>}</label>
+            <label><span className="label">Ontologie (.ttl)</span><input className="input text-xs" type="file" accept=".ttl,text/turtle" onChange={(e) => setOntology(e.target.files?.[0] ?? null)} />{ontology && <span className="text-xs text-slate-600">{ontology.name}</span>}</label>
+          </>}
+          <label><span className="label">Existující SCM (.json)</span><input key={model ? 'selected' : 'empty'} className="input text-xs" type="file" accept=".json,application/json" onChange={(e) => setModel(e.target.files?.[0] ?? null)} /></label>
+          {model && <div className="self-end text-sm">{model.name} <button className="btn ml-2" type="button" onClick={() => setModel(null)}>Odebrat</button></div>}
         </div>
-      </div>
-
-      <div>
-        <label className="label">Popis příběhu</label>
-        <textarea className="input h-56" value={story} onChange={(e) => { setStory(e.target.value); setPreset(null) }}
-          placeholder="Co je to za firmu či prostředí, co se stalo, komu, kdy a s jakými důsledky – a co se naopak NEzměnilo…" />
-        <p className="text-xs text-slate-500 mt-1">
-          Firmu, prostředí, počty entit, intenzitu příběhu i to, zda data potřebují časovou osu (a jaké období),
-          navrhne Gemini. Všechno pak uvidíte a můžete upravit v review.
-        </p>
-      </div>
-
-      <div className="grid md:grid-cols-4 gap-4 items-start">
-        <div className="md:col-span-3">
-          <label className="label">Velikost dat</label>
-          <div className="grid grid-cols-3 gap-2">
-            {SIZES.map(([id, label, desc]) => (
-              <button key={id} onClick={() => setVolume(id)}
-                className={`text-left border rounded-lg p-3 cursor-pointer ${volume === id ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:bg-slate-50'}`}>
-                <div className="font-medium text-sm">{label}</div>
-                <div className="text-xs text-slate-500">{desc}</div>
-              </button>
-            ))}
+        <p className="text-xs text-slate-600 mt-2">{importing ? 'Model se ověří a otevře přímo k úpravám, včetně původního seedu.' : 'SQL a ontologie slouží jako doporučená struktura pro nový model.'}</p>
+      </fieldset>}
+      {!importing && <fieldset className="border-t border-slate-200 pt-3">
+        <legend className="font-semibold text-sm pr-2">Velikost a složitost datasetu</legend>
+        <label className="block max-w-xs mb-2"><span className="label">Přibližný rozsah</span>
+          <select className="input" value={volume} onChange={(e) => setVolume(e.target.value)}>
+            <option value="small">Malý</option><option value="medium">Střední</option><option value="large">Velký</option>
+          </select>
+        </label>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {TARGETS.filter(([key]) => scm || key === 'tables' || key === 'rows').map(([key, label]) => <label key={key}>
+            <span className="label">{label}</span>
+            <input className="input" type="number" min={1} step={1} placeholder="Volitelné" value={targets[key] ?? ''}
+              onChange={(e) => setTargets({ ...targets, [key]: e.target.value === '' ? undefined : Number(e.target.value) })} />
+          </label>)}
+        </div>
+        <p className="text-xs text-slate-600 mt-2">{scm ? 'Orientační cíle. Kauzální proměnné jsou uzly grafu. Celkový počet řádků zahrnuje i odvozené a časové tabulky.' : 'Orientační cíle podle možností scénáře.'}</p>
+      </fieldset>}
+      {scm && <fieldset className="border-t border-slate-200 pt-3 space-y-2">
+        <legend className="font-semibold text-sm pr-2">Obtížnost rekonstrukce příběhu</legend>
+        <div className="flex flex-wrap gap-4 text-sm">
+          <label><input type="radio" name="difficulty" checked={mode === 'automatic'} onChange={() => setMode('automatic')} /> Automaticky</label>
+          <label><input type="radio" name="difficulty" checked={mode === 'manual'} onChange={() => setMode('manual')} /> Ručně</label>
+        </div>
+        {mode === 'automatic' ? <label className="block max-w-md"><span className="label">Cílová obtížnost {target} / 100</span>
+          <input className="w-full accent-blue-600" type="range" min={0} max={100} value={target} onChange={(e) => setTarget(Number(e.target.value))} />
+          <span className="text-xs text-slate-600">Vyšší hodnota ztěžuje odhalení příběhu z dat. Aplikace vybere nejlepší nalezené nastavení.</span>
+        </label> : <>
+          <div className="grid md:grid-cols-2 gap-3 max-w-xl">
+            <label><span className="label">Chybějící hodnoty (NA, %)</span><input className="input" type="number" min={0} max={100} step="any" required value={missing} onChange={(e) => setMissing(e.target.value)} /></label>
+            <label><span className="label">Pozorovací šum (%)</span><input className="input" type="number" min={0} step="any" required value={noise} onChange={(e) => setNoise(e.target.value)} /></label>
           </div>
-        </div>
-        <div>
-          <label className="label">Seed</label>
-          <input type="number" className="input" value={seed} onChange={(e) => setSeed(Number(e.target.value))} />
-          <p className="text-xs text-slate-500 mt-1">Stejný seed = stejná data.</p>
-        </div>
-      </div>
-
-      <div>
-        <label className="label">Generátor dat</label>
-        <div className="grid md:grid-cols-2 gap-2">
-          {ENGINES.map(([id, label, desc]) => (
-            <button key={id} onClick={() => setEngine(id)}
-              className={`text-left border rounded-lg p-3 cursor-pointer ${engine === id ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:bg-slate-50'}`}>
-              <div className="font-medium text-sm">{label}</div>
-              <div className="text-xs text-slate-500">{desc}</div>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {err && <div className="text-sm text-red-700">{err}</div>}
-      <button className="btn btn-primary text-base px-5 py-2" onClick={submit}>{engine === 'scm' ? 'Navrhnout kauzální model (Gemini) →' : 'Navrhnout scénář (Gemini) →'}</button>
-    </div>
+          <p className="text-xs text-slate-600">Například 10 % přidá k číslům náhodnou chybu se směrodatnou odchylkou 10 % původní odchylky sloupce. Týká se pouze pozorované kopie dat.</p>
+        </>}
+      </fieldset>}
+      {!importing && <details className="text-sm"><summary className="cursor-pointer text-slate-700">Pokročilé nastavení</summary>
+        <label className="block max-w-40 mt-2"><span className="label">Seed</span><input required className="input" type="number" step={1} value={seed} onChange={(e) => setSeed(Number(e.target.value))} /></label>
+      </details>}
+      {err && <p role="alert" className="text-sm text-red-700">{err}</p>}
+      <button className="btn btn-primary" disabled={busy}>{busy ? 'Zpracovávám…' : importing ? 'Otevřít SCM' : scm ? 'Navrhnout SCM' : 'Navrhnout scénář'}</button>
+    </form>
   )
 }

@@ -269,11 +269,16 @@ def op_gaussian_noise(ctx: OpContext) -> None:
     share = float(ctx.op.params.get("share", 1.0))
     for col in ctx.columns(NUMERIC):
         x = pd.to_numeric(ctx.table[col], errors="coerce").astype(float).to_numpy()
-        sd = float(np.nanstd(x)) or 1.0
+        if ctx.op.params.get("scale_from_clean"):
+            clean = pd.to_numeric(ctx.clean[ctx.op.target_table][col], errors="coerce").astype(float).to_numpy()
+            finite = clean[np.isfinite(clean)]
+            sd = float(np.std(finite)) if len(finite) else 0.0
+        else:
+            sd = float(np.nanstd(x)) or 1.0
         rows = np.flatnonzero(elig & (ctx.u(col, "share") < share) & np.isfinite(x))
         ctx.eligible_cells += int(elig.sum())
         intensity = float(ctx.op.params.get("intensity", ctx.op.probability))
-        if intensity <= 0 or len(rows) == 0:
+        if intensity <= 0 or sd == 0 or len(rows) == 0:
             continue
         from scipy.stats import norm
         z = norm.ppf(ctx.u(col, "z"))[rows]

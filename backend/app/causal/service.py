@@ -31,15 +31,15 @@ from typing import Any, Callable, Optional
 
 import pandas as pd
 
-from ..contracts.io import Issue, RunRequest, ValidationVerdict
+from ..contracts.io import Issue, ObservationSettings, RunRequest, ValidationVerdict
 from ..llm.client import LLMError, UsageTracker, usage_scope
 from ..contracts.spec import Dashboard, ScenarioSpec, Widget
 from ..storage import runs as store
 from ..storage.text_files import read_saved_text
-from .contracts import CorruptionConfig, DetectiveConfig, DifficultyConfig, EvaluationConfig, SCMSpec
+from .contracts import CorruptionConfig, CorruptionOp, DetectiveConfig, DifficultyConfig, EvaluationConfig, SCMSpec
 from .corruption import observe, table_infos
 from .detective import analyze
-from .difficulty import CandidateEval, optimize, sum_usage
+from .difficulty import CandidateEval, expand_op, optimize, sum_usage
 from .engine import CleanWorld, generate_world
 from .evaluation import aggregate, evaluate
 from .ground_truth import build_manifest
@@ -396,6 +396,40 @@ async def automatic_mode(run_id: str, dcfg: DifficultyConfig, progress=None,
 
 
 # =========================================================================== run integration
+async def _prepare_observation(run_id: str, world: CleanWorld, cfg: ObservationSettings, job) -> dict[str, Any]:
+    if cfg.mode == "manual":
+        operations = []
+        if cfg.missing_percent:
+            operations.extend(expand_op(world.spec, CorruptionOp(type="missing_values_mcar", target_table="*",
+                                                                 probability=cfg.missing_percent / 100), set()))
+        if cfg.noise_percent:
+            operations.extend(expand_op(world.spec, CorruptionOp(type="gaussian_measurement_noise", target_table="*",
+                                                                 params={"intensity": cfg.noise_percent / 100,
+                                                                         "scale_from_clean": True}), set()))
+        job.emit("difficulty", "Aplikuji pozorovací chyby", 0.85)
+        info = await asyncio.to_thread(observe_and_store, run_id, world, CorruptionConfig(operations=operations))
+        return {"mode": "manual", "status": "applied", "observation_id": info.observation_id}
+
+    job.emit("difficulty", "Hledám poškození odpovídající požadované obtížnosti", 0.82)
+    dcfg = DifficultyConfig(target_difficulty=cfg.target, seed=world.seed)
+    result = await automatic_mode(
+        run_id, dcfg, should_stop=lambda: job.cancelled,
+        progress=lambda message, fraction=None: job.emit("difficulty", message,
+                                                        None if fraction is None else 0.82 + 0.16 * fraction),
+    )
+    observation_id = (result.get("artifacts") or {}).get("observation_id")
+    if not observation_id:
+        info = await asyncio.to_thread(observe_and_store, run_id, world, CorruptionConfig(seed=dcfg.seed),
+                                       dcfg.minimum_observability)
+        observation_id = info.observation_id
+    achieved = result.get("achieved_difficulty")
+    if achieved is None and (result.get("baseline") or {}).get("status") == "ok":
+        achieved = result["baseline"].get("mean_difficulty")
+    return {"mode": "automatic", "status": result["status"], "target": cfg.target, "achieved": achieved,
+            "reason": result["reason"], "observation_id": observation_id, "difficulty_id": result["difficulty_id"],
+            "used_baseline": not (result.get("artifacts") or {}).get("observation_id")}
+
+
 def _verdict(rep_spec: ValidationReport, rep_world: ValidationReport, manifest: dict[str, Any]) -> ValidationVerdict:
     status = rep_world.status if rep_spec.status != "FAIL" else "FAIL"
     issues = [Issue(id=c.check_id[:60], severity="critical", table=c.target, description=f"{c.explanation} {c.observed}",
@@ -454,8 +488,10 @@ async def execute_causal_run(req: RunRequest, job) -> dict[str, Any]:
     widgets, werrs = await asyncio.to_thread(validate_widgets, db, spec.dashboard, {}, spec.meta.model_dump())
     verdict = _verdict(gw.spec_report, gw.world_report, gw.manifest)
     status = gw.world_report.status if gw.spec_report.status != "FAIL" else "FAIL"
+    observation = req.input.observation if req.input else None
     run.update({
-        "status": "done", "verdict": verdict.model_dump(), "validator": "scm-deterministic", "checks_summary": summary,
+        "status": "running" if observation else "done", "verdict": verdict.model_dump(),
+        "validator": "scm-deterministic", "checks_summary": summary,
         "signals": [], "repair_history": [], "row_counts": meta["row_counts"], "params": {}, "warnings": scm.meta.warnings,
         "generation_stats": {"timings": w.timings}, "usage": {"total_calls": 0, "total_cost_usd": 0, "total_tokens": 0,
                                                               "by_model": []},
@@ -472,6 +508,17 @@ async def execute_causal_run(req: RunRequest, job) -> dict[str, Any]:
     store.save_json(run_id, "dashboard.json", widgets)
     store.save_json(run_id, "profile.json", {})
     _remember(f"{run_id}:{w.world_hash}", w, gw.manifest)
+    if observation:
+        try:
+            run["observation"] = (await _prepare_observation(run_id, w, observation, job) if status != "FAIL"
+                                  else {"mode": observation.mode, "status": "invalid_world"})
+        except Exception:
+            run["status"] = "error"
+            store.save_json(run_id, "run.json", run)
+            raise
+        run["status"] = "done"
+        run["duration_s"] = round((dt.datetime.now() - t0).total_seconds(), 1)
+        store.save_json(run_id, "run.json", run)
     job.emit("done", f"Hotovo: SCM svět {status}, {sum(meta['row_counts'].values()):,} řádků", 1.0, run_id=run_id)
     return {"run_id": run_id}
 

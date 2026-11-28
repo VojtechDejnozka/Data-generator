@@ -479,10 +479,21 @@ class CategoricalCPT(MechanismType):
                 errs.append(f"unknown categories {sorted(set(row) - set(cats))}")
             try:
                 D.check_categorical(list(row), list(row.values()))
+                if abs(sum(row.values()) - 1) > 1e-6:
+                    errs.append(f"CPT probabilities sum to {sum(row.values()):.6g}, expected 1")
             except D.DistributionError as e:
                 errs.append(str(e))
         for r in p.table:
-            errs += [f"CPT condition on unknown parent '{k}'" for k in r.when if k not in allowed]
+            for alias, value in r.when.items():
+                if alias not in allowed:
+                    errs.append(f"CPT condition on unknown parent '{alias}'")
+                elif parent_types.get(alias) in ("float", "int"):
+                    try:
+                        valid = np.isfinite(float(value))
+                    except ValueError:
+                        valid = False
+                    if not valid:
+                        errs.append(f"CPT condition for '{alias}' requires a finite number")
         return errs
 
     @staticmethod

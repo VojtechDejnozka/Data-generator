@@ -158,7 +158,10 @@ export const api = {
   health: () => req<Json>('GET', '/api/health'),
   presets: () => req<Json[]>('GET', '/api/presets'),
   plan: (input: Json) => req<{ job_id: string }>('POST', '/api/plan', input),
+  scmImport: (model: Json, observation: Json) =>
+    req<{ session_id: string }>('POST', '/api/scm/import', { model, observation }),
   scmValidate: (scm: Json) => req<Json>('POST', '/api/scm/validate', scm),
+  scmMechanisms: () => req<Json[]>('GET', '/api/scm/mechanisms'),
   scmEdit: (scm: Json, operations: Json[]) => req<Json>('POST', '/api/scm/edit', { scm, operations }),
   session: (sid: string) => req<Json>('GET', `/api/plan/${sid}`),
   replan: (sid: string, body: Json) => req<{ job_id: string }>('POST', `/api/plan/${sid}/replan`, body),

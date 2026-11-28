@@ -149,6 +149,9 @@ def validate_spec(spec: SCMSpec) -> ValidationReport:
             if not src:
                 err("variable.parent", tgt, f"unknown parent variable {p.variable}")
                 continue
+            if src.entity not in by_id:
+                err("variable.parent", tgt, f"parent {p.variable} has an unknown entity {src.entity}")
+                continue
             ptypes[p.name] = src.data_type
             rel = relation(spec, src.entity, v.entity)
             if rel is None:

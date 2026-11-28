@@ -95,3 +95,22 @@ def test_auto_repairs_are_reported_in_the_spec(monkeypatch):
     resp = run(planner.plan_story(ScenarioInput(story="Školy a doučování, pilot ve škole 2.", engine="scm", seed=9)))
     assert resp.spec.scm.meta.seed == 9
     assert any("automatická oprava" in w and "final_results" in w for w in resp.spec.scm.meta.warnings)
+
+
+def test_story_planner_receives_both_uploaded_contexts_and_complexity(monkeypatch):
+    sql = "CREATE TABLE blue_shop (id INTEGER PRIMARY KEY);"
+    ontology = "@prefix shop: <https://example.test/shop#> . shop:Order shop:pairedWith shop:Store ."
+
+    class Fake:
+        async def structured(self, *, schema, system, prompt, **kwargs):
+            assert sql in prompt and ontology in prompt
+            assert '"tables": 9' in prompt and '"variables": 12' in prompt and '"rows": 1234' in prompt
+            assert "do not establish causality" in system
+            return schema.model_validate({"scm": scm_obj()})
+
+    monkeypatch.setattr(planner, "get_llm", lambda: Fake())
+    spec = run(planner.plan_story(ScenarioInput(
+        story="Školy a doučování v několika třídách.", engine="scm", sql_schema=sql, ontology=ontology,
+        complexity={"tables": 9, "variables": 12, "rows": 1234},
+    ))).spec.scm
+    assert len(spec.entities) == len(scm_obj()["entities"])

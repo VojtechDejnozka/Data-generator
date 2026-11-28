@@ -13,7 +13,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from .config import get_settings
-from .contracts.io import (PlannerResponse, QueryRequest, ReplanRequest, RunRequest, ScenarioInput, WhatIfRequest)
+from .contracts.io import (ObservationSettings, PlannerResponse, QueryRequest, ReplanRequest, RunRequest, ScenarioInput,
+                           WhatIfRequest)
 from .contracts.spec import ScenarioSpec
 from .detective import investigate
 from .generation.scenarios.registry import catalog
@@ -128,6 +129,13 @@ async def job_events(job_id: str) -> StreamingResponse:
 
 
 # --------------------------------------------------------------------------- planning
+def _create_plan_session(inp: ScenarioInput, resp: PlannerResponse) -> dict:
+    sid = secrets.token_hex(6)
+    _save_session(sid, {"session_id": sid, "round": 0, "input": inp.model_dump(),
+                        "response": resp.model_dump(mode="json"), "history": []})
+    return {"session_id": sid}
+
+
 @app.post("/api/plan")
 async def start_plan(inp: ScenarioInput) -> dict:
     async def work(job):
@@ -137,11 +145,7 @@ async def start_plan(inp: ScenarioInput) -> dict:
             resp = await plan_story(inp)
         else:
             resp = await plan_scenario(inp)
-        sid = secrets.token_hex(6)
-        session = {"session_id": sid, "round": 0, "input": inp.model_dump(), "response": resp.model_dump(mode="json"),
-                   "history": []}
-        _save_session(sid, session)
-        return {"session_id": sid}
+        return _create_plan_session(inp, resp)
 
     return {"job_id": jobs.start("plan", work).id}
 
@@ -544,6 +548,38 @@ class ObserveRequest(_BaseModel):
     evaluation: EvaluationConfig = _Field(default_factory=EvaluationConfig)
     repeats: int = _Field(1, ge=1, le=10)
     with_baseline: bool = True
+
+
+class SCMImportRequest(_BaseModel):
+    model: dict
+    observation: ObservationSettings = _Field(default_factory=ObservationSettings)
+
+
+@app.post("/api/scm/import")
+def scm_import(req: SCMImportRequest) -> dict:
+    from .causal.contracts import SCHEMA_VERSION
+    from .causal.service import scenario_spec
+    from .causal.validation import validate_spec as validate_scm
+    from pydantic import ValidationError
+
+    try:
+        scm = SCMSpec.model_validate(req.model.get("scm", req.model), extra="forbid")
+    except ValidationError as exc:
+        details = [f"{'.'.join(map(str, err['loc']))}: {err['msg']}" for err in exc.errors()[:5]]
+        raise HTTPException(422, "Neplatná struktura SCM. " + "; ".join(details)) from exc
+    if scm.meta.schema_version != SCHEMA_VERSION:
+        raise HTTPException(422, f"Verzi SCM {scm.meta.schema_version} nelze načíst. Podporovaná verze je {SCHEMA_VERSION}.")
+    try:
+        rep = validate_scm(scm)
+    except RecursionError as exc:
+        raise HTTPException(422, "SCM obsahuje cyklus v definicích entit.") from exc
+    if rep.errors:
+        raise HTTPException(422, "SCM nelze spustit. "
+                            + "; ".join(f"{c.target}: {c.explanation}" for c in rep.errors[:8]))
+    story = scm.meta.original_story.strip()
+    inp = ScenarioInput(story=story[:8000] if len(story) >= 10 else "Importovaný kauzální model.",
+                        seed=scm.meta.seed, engine="scm", observation=req.observation)
+    return _create_plan_session(inp, PlannerResponse(spec=scenario_spec(scm)))
 
 
 def _scm_run_or_400(run_id: str) -> dict:

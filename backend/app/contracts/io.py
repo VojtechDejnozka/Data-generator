@@ -9,10 +9,22 @@ from .spec import CausalStep, Column, Distractor, Knob, ScenarioSpec, Table
 
 
 # --------------------------------------------------------------------------- input
+class ComplexityTargets(BaseModel):
+    tables: Optional[int] = Field(None, ge=1)
+    variables: Optional[int] = Field(None, ge=1)
+    entity_instances: Optional[int] = Field(None, ge=1)
+    rows: Optional[int] = Field(None, ge=1)
+
+
+class ObservationSettings(BaseModel):
+    mode: Literal["automatic", "manual"] = "automatic"
+    target: float = Field(50.0, ge=0, le=100)
+    missing_percent: float = Field(0.0, ge=0, le=100)
+    noise_percent: float = Field(0.0, ge=0, allow_inf_nan=False)
+
+
 class ScenarioInput(BaseModel):
-    """User input. Only `story`, `volume` (data size) and `seed` come from the UI; everything else is
-    decided by the STRONG planner (company, environment, entity counts, whether there is a time
-    dimension and which period). The optional fields remain for scripts/tests that want to pin them."""
+    """Story, planning hints and optional settings for the observed dataset."""
 
     story: str = Field(..., min_length=10, max_length=8000)
     volume: Literal["small", "medium", "large"] = "medium"
@@ -24,6 +36,10 @@ class ScenarioInput(BaseModel):
     period_end: Optional[str] = None
     story_intensity: Optional[float] = Field(None, ge=0, le=2)
     custom_model: str = Field("", max_length=8000, description="Optional user data model / ontology")
+    sql_schema: str = Field("", max_length=50000)
+    ontology: str = Field("", max_length=50000)
+    complexity: Optional[ComplexityTargets] = None
+    observation: Optional[ObservationSettings] = None
     data_language: str = "cs"
     preset: Optional[str] = None
     engine: Literal["module", "scm"] = Field(

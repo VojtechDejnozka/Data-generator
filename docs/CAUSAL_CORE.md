@@ -144,6 +144,7 @@ verze reality (`worlds/<hash>/`); výchozí optimalizace SCM nemění.
 | endpoint | popis |
 |---|---|
 | `POST /api/plan` s `engine: "scm"` | LLM návrh SCM (mock: referenční scénář, označeno v `meta.warnings`) |
+| `POST /api/scm/import` | `{model, observation}` ověří verzi a spustitelnost SCM a vrátí plánovací relaci bez volání plánovače |
 | `POST /api/plan/{sid}/replan` | u SCM session: uživatelské úpravy se validují; zpětná vazba → nový návrh |
 | `POST /api/spec/validate`, `POST /api/runs` | pro spec se `scm` validují SCM; běh jde přes kauzální engine |
 | `GET /api/scm/mechanisms`, `/api/scm/corruptions` | registry (schémata parametrů, význam intenzity, meze) |
@@ -159,9 +160,11 @@ verze reality (`worlds/<hash>/`); výchozí optimalizace SCM nemění.
 | `POST /api/jobs/{id}/cancel` | kooperativní zrušení (optimalizace ho respektuje) |
 | `POST /api/runs/{id}/detective` | u SCM běhů slepý detektiv nad pozorovanou baseline, výstup ve tvaru stávajícího UI |
 
-Napojení UI (není součástí úkolu): review SCM = `POST /api/scm/validate` + `POST /api/scm/edit`; schválení =
-`POST /api/runs` se specem; obtížnost = slider cílové obtížnosti → `/difficulty`, přepnutí do manuálu =
-`selected_corruption` z výsledku poslat do `/observe` (konfigurace se zachová).
+Editor průběžně validuje aktuální SCM přes `POST /api/scm/validate` a při schválení ho posílá v
+`POST /api/runs`. Pole `input.observation` spouští po validaci čistého světa pozorovací fázi. Při
+`mode: "automatic"` pracuje s `target` (0–100) a stávajícím optimalizátorem. Při `mode: "manual"` aplikuje
+`missing_percent` a `noise_percent` bez evaluace. Výsledek běhu odkazuje na vybranou pozorovanou databázi.
+Samostatný endpoint `/observe` dál slouží k evaluaci již zadané konfigurace na existujícím běhu.
 
 ## 8. Knihovny
 

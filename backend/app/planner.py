@@ -28,7 +28,8 @@ Rules:
   exactly (the deterministic simulator owns them); you may add extra tables with strategy llm_rows that reference them.
 - Otherwise set meta.archetype null and design tables with strategy llm_dimension (master data) or llm_rows.
 - Evidence must make each causal step verifiable and must compare affected entities against a control group.
-- The user gives only the story, a data size (small | medium | large) and a seed. YOU decide the company
+- Use optional complexity targets for the approximate number of tables and exported rows when compatible.
+- The user gives the story, a data size (small | medium | large) and a seed. YOU decide the company
   and environment description, entity counts, story intensity and whether the data needs a time dimension.
   Many stories are not about change over time: then set meta.period_start and meta.period_end to null and
   use date columns only where they naturally belong. If time matters, pick a period that fits the story.

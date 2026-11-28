@@ -172,17 +172,30 @@ export function DetectiveTab({ runId }: { runId: string }) {
 export function GroundTruthTab({ runId }: { runId: string }) {
   const [gt, setGt] = useState<Json>(null)
   const [shown, setShown] = useState(false)
+  const [error, setError] = useState(false)
+  const reveal = () => {
+    setShown(true)
+    setError(false)
+    api.groundTruth(runId).then(setGt).catch(() => setError(true))
+  }
   if (!shown) {
     return (
       <div className="card p-8 text-center">
         <p className="text-slate-600 mb-3">Ground truth manifest obsahuje to, co generátor do dat skutečně „vložil“ (viník, data, závažnost, realizované dopady, distraktory). Je skrytý, aby šlo příběh nejdřív hledat v datech.</p>
-        <button className="btn btn-primary" onClick={() => { setShown(true); api.groundTruth(runId).then(setGt) }}>👁 Odhalit ground truth</button>
+        <button className="btn btn-primary" onClick={reveal}>👁 Odhalit ground truth</button>
       </div>
     )
   }
+  if (error) return <div className="card p-4 text-sm" role="alert">
+    Ground truth se nepodařilo načíst. <button className="btn ml-2" onClick={reveal}>Zkusit znovu</button>
+  </div>
   if (!gt) return <div className="text-slate-500">Načítám…</div>
-  if (!gt.story) return <pre className="card p-4 text-xs">{JSON.stringify(gt, null, 1)}</pre>
-  const monthly = gt.monthly as Json[]
+  if (gt.kind === 'scm_ground_truth') return <ScmGroundTruth gt={gt} />
+  if (Object.keys(gt).length === 0) return <div className="card p-4 text-sm text-slate-600">Pro tento běh není ground truth k dispozici.</div>
+  if (!gt.story || !Array.isArray(gt.causal_chain) || !Array.isArray(gt.monthly)) {
+    return <pre className="card p-4 text-xs overflow-auto">{JSON.stringify(gt, null, 1)}</pre>
+  }
+  const monthly: Json[] = gt.monthly
   const cols = ['month', 'injected_delay_days', 'actual_delay_affected', 'actual_delay_others']
   return (
     <div className="space-y-4">
@@ -191,7 +204,7 @@ export function GroundTruthTab({ runId }: { runId: string }) {
         <div className="grid md:grid-cols-3 gap-2 text-sm">
           {Object.entries(gt.story).filter(([k]) => k !== 'affected_product_ids').map(([k, v]) => <div key={k}><span className="text-slate-500 text-xs">{k}</span><div className="font-medium">{fmt(v)}</div></div>)}
         </div>
-        <ol className="list-decimal ml-5 mt-3 text-sm">{gt.causal_chain.map((c: Json) => <li key={c.step}>{c.fact} <span className="text-xs text-slate-500">({c.tables.join(', ')})</span></li>)}</ol>
+        <ol className="list-decimal ml-5 mt-3 text-sm">{gt.causal_chain.map((c: Json) => <li key={c.step}>{c.fact} <span className="text-xs text-slate-500">({(c.tables ?? []).join(', ')})</span></li>)}</ol>
       </div>
       <div className="grid lg:grid-cols-2 gap-4">
         <div className="card p-4"><div className="font-medium text-sm">Vložené vs. realizované zpoždění (měsíčně)</div>
@@ -200,12 +213,36 @@ export function GroundTruthTab({ runId }: { runId: string }) {
           <Chart spec={{ columns: ['month', 'lost_revenue_czk', 'walkout_revenue_czk'], rows: monthly.map((m) => [m.month, m.lost_revenue_czk, m.walkout_revenue_czk]), chart: 'bar', x: 'month', y: ['lost_revenue_czk', 'walkout_revenue_czk'] }} /></div>
       </div>
       <div className="card p-4"><h3 className="font-semibold mb-2">Realizované dopady</h3>
-        <div className="grid md:grid-cols-4 gap-2 text-sm">{Object.entries(gt.realized).map(([k, v]) => <div key={k}><span className="text-xs text-slate-500">{k}</span><div className="font-medium tabular-nums">{fmt(v)}</div></div>)}</div></div>
+        <div className="grid md:grid-cols-4 gap-2 text-sm">{Object.entries(gt.realized ?? {}).map(([k, v]) => <div key={k}><span className="text-xs text-slate-500">{k}</span><div className="font-medium tabular-nums">{fmt(v)}</div></div>)}</div></div>
       <div className="card p-4"><h3 className="font-semibold mb-2">Distraktory (konkrétní instance)</h3>
-        <table className="data"><tbody>{gt.distractors.map((d: Json) => <tr key={d.id}><td className="font-medium">{d.name}</td><td className="text-xs">{Object.entries(d).filter(([k]) => !['id', 'name'].includes(k)).map(([k, v]) => `${k}: ${v}`).join(' · ')}</td></tr>)}</tbody></table></div>
+        <table className="data"><tbody>{(gt.distractors ?? []).map((d: Json) => <tr key={d.id}><td className="font-medium">{d.name}</td><td className="text-xs">{Object.entries(d).filter(([k]) => !['id', 'name'].includes(k)).map(([k, v]) => `${k}: ${v}`).join(' · ')}</td></tr>)}</tbody></table></div>
       <div className="card p-4"><h3 className="font-semibold mb-2">Měsíční ground truth</h3><ResultTable columns={Object.keys(monthly[0] ?? {})} rows={monthly.map((m) => Object.values(m))} /></div>
     </div>
   )
+}
+
+function ScmGroundTruth({ gt }: { gt: Json }) {
+  const story = gt.story?.refined || gt.story?.original
+  const facts: Json[] = gt.realized_story_facts ?? []
+  const events: Json[] = gt.realized_events ?? []
+  return <div className="space-y-4">
+    <section className="card p-4 space-y-2">
+      <h3 className="font-semibold">Fakta kauzálního modelu</h3>
+      {story && <p className="text-sm whitespace-pre-wrap">{story}</p>}
+      {facts.length > 0 ? <ResultTable columns={['Fakt', 'Projevil se v datech', 'Viditelné v proměnných']}
+        rows={facts.map((f) => [f.description || f.fact_id, f.realized, f.visible_in?.join(', ') || null])} />
+        : <p className="text-sm text-slate-600">V tomto modelu nejsou uvedena žádná příběhová fakta.</p>}
+    </section>
+    {events.length > 0 && <section className="card p-4 space-y-2">
+      <h3 className="font-semibold">Události v datech</h3>
+      <ResultTable columns={['Událost', 'Od', 'Do', 'Zasažené řádky podle proměnné', 'Projevila se']}
+        rows={events.map((e) => [
+          e.description || e.event_id, e.first_date ?? e.first_step, e.last_date ?? e.last_step,
+          Object.entries(e.affected_rows ?? {}).map(([variable, count]) => `${variable}: ${fmt(count)}`).join(', ') || null,
+          e.realized,
+        ])} />
+    </section>}
+  </div>
 }
 
 export function LogTab({ run }: { run: Json }) {

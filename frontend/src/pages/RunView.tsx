@@ -32,6 +32,7 @@ export default function RunView() {
   if (err) return <div className="text-red-700">{err}</div>
   if (!run) return <div className="text-slate-500">Načítám běh…</div>
   const go = (t: string) => setParams({ tab: t })
+  const observation = run.observation
 
   return (
     <div className="space-y-4">
@@ -48,6 +49,21 @@ export default function RunView() {
         <a className="btn" href={`/api/runs/${run.run_id}/export.zip`}>⬇ CSV (ZIP)</a>
         <a className="btn" href={`/api/runs/${run.run_id}/db`}>⬇ SQLite</a>
       </div>
+      {observation && <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-600">
+        {observation.status === 'invalid_world' ? <span>Pozorovaná data nelze připravit, protože čistá data neprošla validací.</span>
+          : observation.mode === 'manual' ? <span>Pozorovaná data s ručně zadanými chybami.</span>
+          : <span>
+            Cílová obtížnost {observation.target}/100.
+            {observation.achieved != null && ` Odhad ${fmtDifficulty(observation.achieved)}/100.`}
+            {observation.status === 'unreachable_below_baseline' && ' Cíl je nižší než odhad obtížnosti výchozích dat.'}
+            {observation.status !== 'target_reached' && (observation.used_baseline
+              ? ' Z dostupných variant byla použita výchozí pozorovaná data.'
+              : ' Cíl nebyl dosažen. Použito nejlepší nalezené nastavení.')}
+            {observation.achieved == null && ' Obtížnost se nepodařilo vyhodnotit.'}
+          </span>}
+        {observation.observation_id && <a className="text-blue-700 underline"
+          href={`/api/runs/${run.run_id}/observations/${observation.observation_id}/db`}>Stáhnout pozorovaná data (SQLite)</a>}
+      </div>}
       <div className="flex border-b border-slate-200 overflow-x-auto">
         {TABS.map(([id, label]) => <button key={id} className={`tab ${tab === id ? 'tab-active' : ''}`} onClick={() => go(id)}>{label}</button>)}
       </div>
@@ -58,8 +74,10 @@ export default function RunView() {
       {tab === 'whatif' && <WhatIfTab run={run} />}
       {tab === 'files' && <FilesFromData runId={run.run_id} initialTable={params.get('table') ?? undefined} />}
       {tab === 'detective' && <DetectiveTab runId={run.run_id} />}
-      {tab === 'truth' && <GroundTruthTab runId={run.run_id} />}
+      {tab === 'truth' && <GroundTruthTab key={run.run_id} runId={run.run_id} />}
       {tab === 'log' && <LogTab run={run} />}
     </div>
   )
 }
+
+const fmtDifficulty = (value: number) => value.toLocaleString('cs-CZ', { maximumFractionDigits: 1 })
