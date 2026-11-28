@@ -60,6 +60,17 @@ async function parseError(res: Response): Promise<ApiError> {
 
 export type Json = any
 
+export interface BackendHealth {
+  ok: boolean
+  mock?: boolean
+  provider?: string
+  strong_model?: string
+  cheap_model?: string
+  strong_fallbacks?: string[]
+  cheap_fallbacks?: string[]
+  signup_mode?: string
+}
+
 export interface Column {
   name: string
   type: 'int' | 'float' | 'text' | 'date' | 'datetime' | 'bool'
@@ -249,7 +260,13 @@ export async function download(runId: string, what: DownloadWhat | 'scm', extra:
 }
 
 export const api = {
-  health: () => req<Json>('GET', '/api/health'),
+  health: async (signal?: AbortSignal): Promise<BackendHealth> => {
+    const response = await fetch(`${BASE}/api/health`, { cache: 'no-store', signal })
+    if (!response.ok) throw new ApiError(response.status, 'Kontrola dostupnosti backendu selhala.')
+    const health = await response.json()
+    if (typeof health?.ok !== 'boolean') throw new Error('Neplatná odpověď kontroly backendu.')
+    return health
+  },
   me: () => req<Me>('GET', '/api/me'),
   updateMe: (display_name: string) => req<Json>('PATCH', '/api/me', { display_name }),
   share: (id: string, enabled: boolean) => req<{ share_token: string | null }>('POST', `/api/runs/${id}/share`, { enabled }),

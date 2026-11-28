@@ -1,16 +1,15 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, download, type DownloadWhat, type Json } from '../api'
 import ReportTab from '../components/ReportTab'
 import FilesFromData from '../components/FilesFromData'
 import DataBrowser from '../components/DataBrowser'
-import { DashboardTab, DetectiveTab, GroundTruthTab, LogTab, SqlTab } from '../components/Tabs'
-import { VerdictChip } from './Home'
+import { DashboardTab, GroundTruthTab, LogTab, SqlTab } from '../components/Tabs'
 import JobProgress from '../components/JobProgress'
 
 const TABS: [string, string][] = [
   ['report', 'Report & důkaz'], ['data', 'Data browser'], ['dashboard', 'Dashboard'], ['sql', 'SQL'],
-  ['files', 'Soubory z dat'], ['detective', 'Detektiv'], ['truth', 'Ground truth'], ['log', 'Log & tokeny'],
+  ['files', 'Soubory z dat'], ['truth', 'Ground truth'], ['log', 'Log & tokeny'],
 ]
 
 const SHARED_TABS = new Set(['report', 'data', 'dashboard', 'sql', 'truth'])
@@ -29,11 +28,12 @@ export default function RunView({ runId, shared = false }: { runId?: string; sha
   const [sql, setSql] = useState('')
   const [err, setErr] = useState<string | null>(null)
   const [reviewError, setReviewError] = useState('')
+  const [downloadError, setDownloadError] = useState('')
   const [openingReview, setOpeningReview] = useState(false)
 
   const [reload, setReload] = useState(0)
   useEffect(() => {
-    setRun(null); setReport(null); setSchema(null)
+    setRun(null); setReport(null); setSchema(null); setDownloadError('')
     api.run(rid!).then(setRun).catch((e) => setErr(String(e)))
     api.report(rid!).then(setReport).catch(() => undefined)
     api.schema(rid!).then(setSchema).catch(() => undefined)
@@ -59,7 +59,10 @@ export default function RunView({ runId, shared = false }: { runId?: string; sha
       setOpeningReview(false)
     }
   }
-  const dl = (what: DownloadWhat | 'scm', extra = {}) => download(run.run_id, what, extra).catch((e) => setErr(String(e)))
+  const dl = (what: DownloadWhat | 'scm') => {
+    setDownloadError('')
+    return download(run.run_id, what).catch((e) => setDownloadError(String(e)))
+  }
 
   return (
     <div className="space-y-4">
@@ -70,20 +73,16 @@ export default function RunView({ runId, shared = false }: { runId?: string; sha
             {!shared && run.is_preset && <span className="font-sans"> · ukázkový běh</span>}</div>
           <h1 className="text-[28px] leading-tight font-semibold tracking-[-0.015em] truncate">{run.name} <span className="text-slate-500 font-normal text-base">– {run.label}</span></h1>
         </div>
-        <VerdictChip v={run.verdict?.verdict} />
-        {run.engine === 'scm' && <span className="chip bg-indigo-50 text-indigo-800 border border-indigo-200"
-          title={`hash čistého světa ${run.causal?.world_hash ?? ''}`}>SCM engine · validace {run.causal?.status}</span>}
         {run.mock && <span className="chip bg-amber-50 text-amber-800 border border-amber-200">mock LLM</span>}
         {!shared && run.parent_run_id && <Link className="btn" to={`/compare?${new URLSearchParams({
           a: run.parent_run_id, b: run.run_id, ...(tab ? { tab } : {}),
         })}`}>Porovnat s rodičem</Link>}
         {!shared && run.spec && <button className="btn" onClick={() => void openReview()} disabled={openingReview}>Zpět k návrhu</button>}
-        {!shared && run.spec?.scm && <button className="btn" onClick={() => void dl('scm')}>Stáhnout SCM (JSON)</button>}
-        {!shared && <button className="btn" onClick={() => void dl('zip')}>⬇ CSV (ZIP)</button>}
-        {!shared && <button className="btn" onClick={() => void dl('db')}>⬇ SQLite</button>}
+        {!shared && <DownloadMenu hasScm={Boolean(run.spec?.scm)} onDownload={dl} />}
         {!shared && run.own && <ShareButton runId={run.run_id} initial={run.share_token ?? null} />}
       </div>
       {reviewError && <div role="alert" className="text-sm text-red-700">{reviewError}</div>}
+      {downloadError && <div role="alert" className="text-sm text-red-700">{downloadError}</div>}
       {observation && <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-600">
         {observation.status === 'invalid_world' ? <span>Pozorovaná data nelze připravit, protože čistá data neprošla validací.</span>
           : observation.mode === 'manual' ? <span>Pozorovaná data s ručně zadanými chybami.</span>
@@ -96,8 +95,6 @@ export default function RunView({ runId, shared = false }: { runId?: string; sha
               : ' Cíl nebyl dosažen. Použito nejlepší nalezené nastavení.')}
             {observation.achieved == null && ' Obtížnost se nepodařilo vyhodnotit.'}
           </span>}
-        {!shared && observation.observation_id && <button className="text-blue-700 underline cursor-pointer"
-          onClick={() => void dl('obs_db', { obs_id: observation.observation_id })}>Stáhnout pozorovaná data (SQLite)</button>}
       </div>}
       <div className="flex border-b border-slate-200 overflow-x-auto">
         {tabs.map(([id, label]) => <button key={id} className={`tab ${tab === id ? 'tab-active' : ''}`} onClick={() => go(id)}>{label}</button>)}
@@ -107,10 +104,47 @@ export default function RunView({ runId, shared = false }: { runId?: string; sha
       {tab === 'dashboard' && <DashboardTab key={run.run_id} runId={run.run_id} canRefresh={!shared && run.own && run.engine === 'scm' && run.status === 'done'} />}
       {tab === 'sql' && <SqlTab runId={run.run_id} initial={sql} />}
       {tab === 'files' && <FilesFromData runId={run.run_id} initialTable={params.get('table') ?? undefined} />}
-      {tab === 'detective' && <DetectiveTab runId={run.run_id} />}
       {tab === 'truth' && <GroundTruthTab key={run.run_id} runId={run.run_id} />}
       {tab === 'log' && <LogTab run={run} />}
     </div>
+  )
+}
+
+function DownloadMenu({ hasScm, onDownload }: { hasScm: boolean; onDownload: (what: DownloadWhat | 'scm') => void }) {
+  const menu = useRef<HTMLDetailsElement>(null)
+  const summary = useRef<HTMLElement>(null)
+  const close = () => {
+    if (menu.current) menu.current.open = false
+  }
+  useEffect(() => {
+    const closeOutside = (event: PointerEvent) => {
+      if (menu.current?.open && event.target instanceof Node && !menu.current.contains(event.target)) close()
+    }
+    document.addEventListener('pointerdown', closeOutside)
+    return () => document.removeEventListener('pointerdown', closeOutside)
+  }, [])
+  const choose = (what: DownloadWhat | 'scm') => {
+    close()
+    summary.current?.focus()
+    onDownload(what)
+  }
+  return (
+    <details ref={menu} className="group relative" onKeyDown={(event) => {
+      if (event.key === 'Escape' && menu.current?.open) {
+        event.stopPropagation()
+        close()
+        summary.current?.focus()
+      }
+    }}>
+      <summary ref={summary} className="btn cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+        Stáhnout <span aria-hidden="true" className="text-xs group-open:rotate-180">▾</span>
+      </summary>
+      <div className="card absolute right-0 z-20 mt-2 min-w-40 space-y-0.5 p-1 shadow-sm">
+        {hasScm && <button type="button" className="w-full rounded px-3 py-2 text-left text-sm hover:bg-slate-100" onClick={() => choose('scm')}>SCM (JSON)</button>}
+        <button type="button" className="w-full rounded px-3 py-2 text-left text-sm hover:bg-slate-100" onClick={() => choose('zip')}>CSV (ZIP)</button>
+        <button type="button" className="w-full rounded px-3 py-2 text-left text-sm hover:bg-slate-100" onClick={() => choose('db')}>SQLite</button>
+      </div>
+    </details>
   )
 }
 

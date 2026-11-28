@@ -126,7 +126,7 @@ export default function ScmPanel({ spec, input, sessionId, round, parentRunId, r
       {round >= 4 && <p className="text-xs text-slate-600">Limit přeplánování tohoto návrhu byl vyčerpán.</p>}
       {round > 0 && <p className="text-sm whitespace-pre-wrap" role="status">{notes || 'Upravený SCM je načtený.'}</p>}
     </section>
-    {scm.meta.warnings?.length > 0 && <details className="text-sm text-slate-700"><summary className="cursor-pointer">Upozornění k modelu</summary>
+    {scm.meta.warnings?.length > 0 && <details className="text-sm text-slate-700"><summary className="cursor-pointer">Informace k modelu</summary>
       <ul className="list-disc ml-5 mt-1">{scm.meta.warnings.map((warning: string, i: number) => <li key={i}>{warning}</li>)}</ul>
     </details>}
     {(pending || current?.error || errors.length > 0 || warnings.length > 0 || error) && <div className="card p-3 text-sm" role="status">

@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api, fmt, type Json } from '../api'
 
@@ -10,24 +10,12 @@ export function VerdictChip({ v }: { v?: string }) {
   return <span className={`inline-flex items-center gap-1 text-xs font-medium whitespace-nowrap ${cls}`}><span aria-hidden="true">{icon}</span>{text}</span>
 }
 
-// The demo story. Plain text is context; marked phrases are the causal chain hidden in the data.
-const STORY: [string, boolean][] = [
-  ['Tržby prodejen klesají, i když poptávka zůstává stejná. ', false],
-  ['Jeden dodavatel dodává čím dál později', true], [', ', false],
-  ['v regálech chybí zboží', true], [', ', false],
-  ['zákazníci odcházejí bez nákupu', true], [' a ', false],
-  ['přibývá stížností na nedostupnost', true], ['.', false],
-]
-
 function Hero() {
-  let k = 0
   return (
     <section className="pt-10 pb-16 md:pt-16 md:pb-24">
-      <p className="max-w-[30ch] text-[28px] md:text-[42px] leading-[1.2] tracking-[-0.018em] font-medium">
-        {STORY.map(([t, marked], i) => marked
-          ? <span key={i} className="mark mark-sweep" style={{ animationDelay: `${300 + k++ * 420}ms` }}>{t}</span>
-          : <Fragment key={i}>{t}</Fragment>)}
-      </p>
+      <h1 className="max-w-[30ch] text-[28px] md:text-[42px] leading-[1.2] tracking-[-0.018em] font-medium">
+        Jaký příběh chcete vidět <span className="mark mark-sweep" style={{ animationDelay: '300ms' }}>v datech?</span>
+      </h1>
       <div className="mt-10 flex flex-wrap items-center gap-x-6 gap-y-3 text-[15px] text-slate-600">
         <p className="max-w-[46ch]">
           Napište příběh a Story2Data z něj vytvoří propojený dataset, ve kterém se dá dohledat krok za krokem.

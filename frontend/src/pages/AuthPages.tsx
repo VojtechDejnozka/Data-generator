@@ -117,7 +117,7 @@ export function Register() {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [done, setDone] = useState(false)
-  useEffect(() => { api.health().then((h) => setMode(h.signup_mode)).catch(() => setMode(null)) }, [])
+  useEffect(() => { api.health().then((h) => setMode(h.signup_mode ?? null)).catch(() => setMode(null)) }, [])
 
   if (!enabled) return <Navigate to="/" replace />
   if (session) return <Navigate to={next} replace />
